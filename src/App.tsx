@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import emergencySiren from './assets/dirty-siren-40635.mp3';
+import notificationSound from './assets/Notifi.wav';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { db } from './lib/firebase';
+import { submitEmergencyReport } from './lib/emergencyUtils';
 
 interface SpeechRecognitionEvent {
   results: {
@@ -34,15 +38,17 @@ declare global {
   }
 }
 
-import { Bell, Home, Stethoscope, Activity, UserCircle, Phone, MessageCircle, X, Send, HeartPulse, MapPin, Camera, Mic } from 'lucide-react';
+import { Bell, Home, Stethoscope, Activity, UserCircle, Phone, MessageCircle, X, Send, HeartPulse, MapPin, Camera, Mic, CheckCircle, Bot, RefreshCw } from 'lucide-react';
 import { PredictionPage } from './pages/prediction';
 import { DetectionTrackerPage } from './pages/detection-tracker';
 import { QuickFirstAidPage } from './pages/quick-first-aid';
 import { CallEmergencyPage, ManualPage, TipsPage, VideoGuidePage } from './pages/quick-actions';
 import { ProfilePage } from './pages/profile';
 import { FriendsPage } from './pages/friends';
+import { NotificationsPage } from './pages/notifications';
 import { LoginPage } from './pages/login';
 import { SignupPage } from './pages/signup';
+import { geminiAI } from './lib/geminiAI';
 
 function SplashScreen() {
   return (
@@ -56,10 +62,11 @@ function SplashScreen() {
 
 function ChatBot({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const [messages, setMessages] = useState([
-    { text: "Hello! I'm here to help you with emergency-related questions.", type: 'bot' }
+    { text: "Namaste! 🙏 Main aapka Emergency Response AI Assistant hoon. Emergency situations mein help karne ke liye yahan hoon. Kya help chahiye aapko?", type: 'bot' }
   ]);
   const [input, setInput] = useState('');
   const [isListening, setIsListening] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
 
   useEffect(() => {
@@ -72,15 +79,19 @@ function ChatBot({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) 
 
       recognition.onresult = (event: SpeechRecognitionEvent) => {
         const transcript = event.results[0][0].transcript;
+        console.log('🎤 Speech recognized:', transcript);
         setInput(transcript);
         setIsListening(false);
       };
 
-      recognition.onerror = () => {
+      recognition.onerror = (event) => {
+        console.error('🎤 Speech recognition error:', event);
         setIsListening(false);
+        alert('Speech recognition error. Please try typing instead.');
       };
 
       recognition.onend = () => {
+        console.log('🎤 Speech recognition ended');
         setIsListening(false);
       };
     }
@@ -99,25 +110,61 @@ function ChatBot({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) 
     }
 
     if (isListening) {
+      console.log('🎤 Stopping speech recognition...');
       recognitionRef.current.stop();
     } else {
-      recognitionRef.current.start();
-      setIsListening(true);
+      console.log('🎤 Starting speech recognition...');
+      try {
+        recognitionRef.current.start();
+        setIsListening(true);
+      } catch (error) {
+        console.error('🎤 Error starting speech recognition:', error);
+        alert('Could not start speech recognition. Please try again.');
+        setIsListening(false);
+      }
     }
   };
 
-  const handleSend = () => {
-    if (!input.trim()) return;
+  const clearChat = () => {
+    setMessages([{ 
+      text: "Namaste! 🙏 Main aapka Emergency Response AI Assistant hoon. Emergency situations mein help karne ke liye yahan hoon. Kya help chahiye aapko?", 
+      type: 'bot' 
+    }]);
+    geminiAI.clearHistory();
+  };
+
+  const handleSend = async (customMessage?: string) => {
+    const messageToSend = customMessage || input.trim();
+    if (!messageToSend || isLoading) return;
     
-    setMessages(prev => [...prev, { text: input, type: 'user' }]);
+    setMessages(prev => [...prev, { text: messageToSend, type: 'user' }]);
     setInput('');
+    setIsLoading(true);
     
-    setTimeout(() => {
-      setMessages(prev => [...prev, {
-        text: "I understand you need help. Please click the SOS button for immediate emergency assistance, or let me know what specific information you need.",
-        type: 'bot'
-      }]);
-    }, 1000);
+    try {
+      // Get AI response from Gemini
+      const aiResponse = await geminiAI.sendMessage(messageToSend);
+      setMessages(prev => [...prev, { text: aiResponse, type: 'bot' }]);
+    } catch (error) {
+      console.error('Error getting AI response:', error);
+      
+      // Provide helpful fallback responses for common emergency queries in Hinglish
+      let fallbackResponse = "Sorry yaar, AI connect nahi ho raha. Emergency ke liye ye numbers call kar:\n\n🚨 Emergency Numbers:\n• Police: 100\n• Fire: 101\n• Ambulance: 102\n• Women Helpline: 1091\n• Child Helpline: 1098";
+      
+      // Check if the message contains emergency keywords and provide basic guidance
+      const lowerMessage = messageToSend.toLowerCase();
+      if (lowerMessage.includes('bleeding') || lowerMessage.includes('blood') || lowerMessage.includes('khoon')) {
+        fallbackResponse = "Bleeding emergency mein:\n\n1. Clean cloth se pressure dal\n2. Area ko upar rakh\n3. Ambulance ko call kar (102)\n4. Help aane tak pressure rakhein\n\n🚨 Ambulance ke liye 102 call kar";
+      } else if (lowerMessage.includes('fire') || lowerMessage.includes('aag')) {
+        fallbackResponse = "Fire emergency:\n\n1. Turant bahar niklo\n2. Fire services ko call kar (101)\n3. Smoke se bachne ke liye neeche raho\n4. Elevator use mat karo\n5. Safe area mein milo\n\n🚨 Fire services ke liye 101 call kar";
+      } else if (lowerMessage.includes('heart') || lowerMessage.includes('chest pain') || lowerMessage.includes('dil')) {
+        fallbackResponse = "Heart attack ke symptoms:\n\n1. Ambulance ko turant call kar (102)\n\n2. Baith jao aur calm raho\n3. Aspirin available hai to le lo\n4. Tight clothes loose kar do\n5. Khud drive mat karo\n\n🚨 102 turant call kar - har minute important hai!";
+      }
+      
+      setMessages(prev => [...prev, { text: fallbackResponse, type: 'bot' }]);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   if (!isOpen) return null;
@@ -125,10 +172,32 @@ function ChatBot({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) 
   return (
     <div className="fixed bottom-20 right-4 w-80 h-96 bg-white rounded-xl shadow-2xl flex flex-col overflow-hidden z-50 max-w-[calc(100vw-2rem)]">
       <div className="bg-red-500 p-4 flex justify-between items-center">
-        <h3 className="text-white font-semibold">Emergency Assistant</h3>
-        <button onClick={onClose} className="text-white hover:text-red-100">
-          <X className="w-5 h-5" />
-        </button>
+        <div className="flex items-center gap-2">
+          <Bot className="w-5 h-5 text-white" />
+          <h3 className="text-white font-semibold">AI Emergency Assistant</h3>
+        </div>
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={clearChat} 
+            className="text-white hover:text-red-100 p-1"
+            title="Clear chat"
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
+          <button 
+            onClick={async () => {
+              const isConnected = await geminiAI.testConnection();
+              alert(isConnected ? '✅ AI Connection Test: SUCCESS' : '❌ AI Connection Test: FAILED - Check console for details');
+            }} 
+            className="text-white hover:text-red-100 p-1"
+            title="Test AI connection"
+          >
+            <Bot className="w-4 h-4" />
+          </button>
+          <button onClick={onClose} className="text-white hover:text-red-100">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
       </div>
       
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -137,10 +206,59 @@ function ChatBot({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) 
             <div className={`max-w-[80%] rounded-lg p-3 ${
               msg.type === 'user' ? 'bg-red-500 text-white' : 'bg-gray-100 text-gray-800'
             }`}>
-              {msg.text}
+              <div className="whitespace-pre-wrap text-sm">{msg.text}</div>
             </div>
           </div>
         ))}
+        {isLoading && (
+          <div className="flex justify-start">
+            <div className="bg-gray-100 text-gray-800 rounded-lg p-3">
+              <div className="flex items-center gap-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-red-500"></div>
+                <span className="text-sm">AI is thinking...</span>
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {/* Quick Action Buttons - Show only when no messages or first message */}
+        {messages.length <= 1 && !isLoading && (
+          <div className="space-y-2">
+            <p className="text-xs text-gray-500 text-center">Quick Actions:</p>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => handleSend("Bleeding ka first aid kya hai?")}
+                className="text-xs bg-red-50 text-red-600 p-2 rounded-lg hover:bg-red-100 transition-colors"
+              >
+                🩸 First Aid
+              </button>
+              <button
+                onClick={() => handleSend("Fire emergency mein kya karna chahiye?")}
+                className="text-xs bg-orange-50 text-orange-600 p-2 rounded-lg hover:bg-orange-100 transition-colors"
+              >
+                🔥 Fire Safety
+              </button>
+              <button
+                onClick={() => handleSend("India ke emergency numbers kya hain?")}
+                className="text-xs bg-blue-50 text-blue-600 p-2 rounded-lg hover:bg-blue-100 transition-colors"
+              >
+                📞 Emergency Numbers
+              </button>
+              <button
+                onClick={() => handleSend("Earthquake mein kaise safe rahein?")}
+                className="text-xs bg-yellow-50 text-yellow-600 p-2 rounded-lg hover:bg-yellow-100 transition-colors"
+              >
+                🌋 Earthquake Safety
+              </button>
+            </div>
+            
+            {/* Voice Instructions */}
+            <div className="text-center mt-3 p-2 bg-blue-50 rounded-lg">
+              <p className="text-xs text-blue-600 font-medium">🎤 Voice Commands</p>
+              <p className="text-xs text-blue-500">Click microphone button and speak in Hindi/English</p>
+            </div>
+          </div>
+        )}
       </div>
       
       <div className="border-t p-4 flex gap-2">
@@ -148,23 +266,33 @@ function ChatBot({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) 
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyPress={(e) => e.key === 'Enter' && handleSend()}
-          placeholder="Type your message..."
-          className="flex-1 border rounded-full px-4 py-2 focus:outline-none focus:border-red-500"
+          onKeyPress={(e) => e.key === 'Enter' && !isLoading && handleSend()}
+          placeholder={isLoading ? "AI is responding..." : "Type your message..."}
+          disabled={isLoading}
+          className="flex-1 border rounded-full px-4 py-2 focus:outline-none focus:border-red-500 disabled:bg-gray-50 disabled:text-gray-500"
         />
         <button
           onClick={toggleListening}
+          disabled={isLoading}
           className={`p-2 rounded-full ${
             isListening 
               ? 'bg-red-500 text-white animate-pulse' 
+              : isLoading
+              ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
               : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
           }`}
+          title={isListening ? "Listening... Click to stop" : "Click to speak"}
         >
-          <Mic className="w-5 h-5" />
+          <Mic className={`w-5 h-5 ${isListening ? 'animate-pulse' : ''}`} />
         </button>
         <button
           onClick={handleSend}
-          className="bg-red-500 text-white rounded-full p-2 hover:bg-red-600"
+          disabled={isLoading || !input.trim()}
+          className={`rounded-full p-2 ${
+            isLoading || !input.trim()
+              ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+              : 'bg-red-500 text-white hover:bg-red-600'
+          }`}
         >
           <Send className="w-5 h-5" />
         </button>
@@ -174,25 +302,222 @@ function ChatBot({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) 
 }
 
 function EmergencyReport() {
+  const { user } = useAuth();
   const [selectedType, setSelectedType] = useState('');
-  const [location] = useState('Kothrud, Pune, 411038');
+  const [selectedOption, setSelectedOption] = useState('');
+  const [location, setLocation] = useState('Park Street, Kolkata, 700016');
   const [images] = useState<string[]>([]);
+  const [description, setDescription] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitSuccess, setSubmitSuccess] = useState(false);
+  const [showLocationInput, setShowLocationInput] = useState(false);
 
   const emergencyTypes = [
-    { id: 'accident', label: 'Accident', icon: Activity },
-    { id: 'fire', label: 'Fire', icon: Bell },
-    { id: 'medical', label: 'Medical', icon: Stethoscope },
-    { id: 'flood', label: 'Flood', icon: Activity },
-    { id: 'quake', label: 'Quake', icon: Activity },
-    { id: 'robbery', label: 'Robbery', icon: Bell },
-    { id: 'assault', label: 'Assault', icon: Bell },
-    { id: 'other', label: 'Other', icon: Bell },
+    { 
+      id: 'accident', 
+      label: 'Accident', 
+      icon: Activity,
+      options: [
+        'Car Accident',
+        'Motorcycle Accident',
+        'Pedestrian Hit',
+        'Bicycle Accident',
+        'Construction Accident',
+        'Industrial Accident'
+      ]
+    },
+    { 
+      id: 'fire', 
+      label: 'Fire', 
+      icon: Bell,
+      options: [
+        'Building Fire',
+        'Vehicle Fire',
+        'Forest Fire',
+        'Kitchen Fire',
+        'Electrical Fire',
+        'Gas Leak'
+      ]
+    },
+    { 
+      id: 'medical', 
+      label: 'Medical', 
+      icon: Stethoscope,
+      options: [
+        'Heart Attack',
+        'Stroke',
+        'Unconscious Person',
+        'Severe Bleeding',
+        'Difficulty Breathing',
+        'Allergic Reaction',
+        'Seizure',
+        'Overdose'
+      ]
+    },
+    { 
+      id: 'flood', 
+      label: 'Flood', 
+      icon: Activity,
+      options: [
+        'Flash Flood',
+        'River Overflow',
+        'Sewage Backup',
+        'Storm Surge',
+        'Dam Break'
+      ]
+    },
+    { 
+      id: 'quake', 
+      label: 'Earthquake', 
+      icon: Activity,
+      options: [
+        'Minor Earthquake',
+        'Major Earthquake',
+        'Aftershock',
+        'Building Collapse',
+        'Landslide'
+      ]
+    },
+    { 
+      id: 'robbery', 
+      label: 'Robbery', 
+      icon: Bell,
+      options: [
+        'Armed Robbery',
+        'Bank Robbery',
+        'Home Invasion',
+        'Vehicle Theft',
+        'Shoplifting'
+      ]
+    },
+    { 
+      id: 'assault', 
+      label: 'Assault', 
+      icon: Bell,
+      options: [
+        'Physical Assault',
+        'Sexual Assault',
+        'Domestic Violence',
+        'Gang Violence',
+        'Hate Crime'
+      ]
+    },
+    { 
+      id: 'other', 
+      label: 'Other', 
+      icon: Bell,
+      options: [
+        'Natural Disaster',
+        'Chemical Spill',
+        'Power Outage',
+        'Gas Leak',
+        'Suspicious Package',
+        'Animal Attack'
+      ]
+    },
   ];
+
+  const handleEmergencyTypeClick = (typeId: string) => {
+    if (selectedType === typeId) {
+      // If clicking the same type, hide it
+      setSelectedType('');
+      setSelectedOption('');
+    } else {
+      // If clicking a different type, show it
+      setSelectedType(typeId);
+      setSelectedOption('');
+    }
+  };
+
+  const handleOptionClick = (option: string) => {
+    setSelectedOption(option);
+    // Scroll to the bottom to show the form
+    setTimeout(() => {
+      window.scrollTo({
+        top: document.body.scrollHeight,
+        behavior: 'smooth'
+      });
+    }, 100);
+  };
+
+  const handleLocationChange = (newLocation: string) => {
+    setLocation(newLocation);
+    setShowLocationInput(false);
+  };
+
+  const quickLocations = [
+    'Park Street, Kolkata, 700016',
+    'Salt Lake City, Kolkata, 700091',
+    'New Town, Kolkata, 700156',
+    'Howrah, Kolkata, 711101',
+    'Dum Dum, Kolkata, 700028',
+    'Tollygunge, Kolkata, 700033',
+    'Ballygunge, Kolkata, 700019',
+    'Alipore, Kolkata, 700027',
+    'Esplanade, Kolkata, 700069',
+    'Bidhannagar, Kolkata, 700064'
+  ];
+
+  const handleSubmitReport = async () => {
+    if (!user || !selectedType || !selectedOption) {
+      alert('Please select an emergency type and option');
+      return;
+    }
+
+    if (!location.trim()) {
+      alert('Please enter a location');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      await submitEmergencyReport({
+        userId: user.uid,
+        userName: user.displayName || user.email?.split('@')[0] || 'Anonymous',
+        emergencyType: selectedType,
+        specificType: selectedOption,
+        location: location.trim(),
+        description: description || 'No additional details provided',
+        priority: 'high'
+      });
+
+      setSubmitSuccess(true);
+      // Reset form
+      setSelectedType('');
+      setSelectedOption('');
+      setDescription('');
+      setLocation('Park Street, Kolkata, 700016'); // Reset to default
+      
+      // Show success message
+      alert('Emergency report submitted successfully! All users have been notified.');
+      
+      // Reset success state after 3 seconds
+      setTimeout(() => setSubmitSuccess(false), 3000);
+    } catch (error) {
+      console.error('Error submitting emergency report:', error);
+      alert('Failed to submit emergency report. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   return (
     <div className="bg-gray-50 p-4 sm:p-6 rounded-t-3xl -mt-6 min-h-screen">
       <div className="max-w-md mx-auto">
-        <h2 className="text-2xl font-semibold mb-6">Select Emergency type</h2>
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-2xl font-semibold">Select Emergency Type</h2>
+          {selectedType && (
+            <button
+              onClick={() => {
+                setSelectedType('');
+                setSelectedOption('');
+              }}
+              className="text-gray-400 hover:text-gray-600 p-1"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          )}
+        </div>
         
         <div className="grid grid-cols-4 gap-2 sm:gap-4 mb-8">
           {emergencyTypes.map((type) => {
@@ -200,9 +525,9 @@ function EmergencyReport() {
             return (
               <button
                 key={type.id}
-                onClick={() => setSelectedType(type.id)}
-                className={`flex flex-col items-center p-2 sm:p-3 rounded-lg ${
-                  selectedType === type.id ? 'bg-red-50 text-red-500' : 'text-gray-500'
+                onClick={() => handleEmergencyTypeClick(type.id)}
+                className={`flex flex-col items-center p-2 sm:p-3 rounded-lg transition-all duration-200 ${
+                  selectedType === type.id ? 'bg-red-50 text-red-500 ring-2 ring-red-200' : 'text-gray-500 hover:bg-gray-50'
                 }`}
               >
                 <Icon className="w-5 h-5 sm:w-6 sm:h-6 mb-1" />
@@ -213,20 +538,104 @@ function EmergencyReport() {
         </div>
 
         {selectedType && (
-          <div className="space-y-4 pb-24">
-            <div className="p-3 border border-red-500 rounded-lg">
-              <p className="text-gray-700">Stuck in elevator</p>
+          <div className="space-y-4 pb-24 animate-in slide-in-from-bottom-2 duration-300">
+            {/* Emergency Type Options */}
+            <div className="space-y-2">
+              <label className="text-lg font-semibold">Select Specific Type</label>
+              <div className="grid grid-cols-2 gap-2">
+                {emergencyTypes.find(type => type.id === selectedType)?.options.map((option, index) => (
+                  <button
+                    key={index}
+                    onClick={() => handleOptionClick(option)}
+                    className={`p-3 border rounded-lg text-left transition-colors ${
+                      selectedOption === option 
+                        ? 'border-red-500 bg-red-50 text-red-700' 
+                        : 'border-gray-200 text-gray-700 hover:border-red-300 hover:bg-red-50'
+                    }`}
+                  >
+                    <p className="text-sm font-medium">{option}</p>
+                  </button>
+                ))}
+              </div>
             </div>
+
+            {selectedOption && (
+              <div className="p-3 border border-red-500 rounded-lg">
+                <p className="text-gray-700 font-medium">Selected: {selectedOption}</p>
+                <p className="text-sm text-gray-500 mt-1">Please provide additional details below</p>
+              </div>
+            )}
 
             <div className="space-y-2">
               <label className="text-lg font-semibold">Location</label>
-              <div className="flex items-center justify-between bg-white p-3 rounded-lg shadow-sm">
-                <div className="flex items-center gap-2 text-sm">
-                  <MapPin className="text-gray-400 w-4 h-4 flex-shrink-0" />
-                  <span className="truncate">{location}</span>
+              {showLocationInput ? (
+                <div className="space-y-3">
+                  <input
+                    type="text"
+                    value={location}
+                    onChange={(e) => setLocation(e.target.value)}
+                    placeholder="Enter emergency location..."
+                    className="w-full p-3 border border-gray-200 rounded-lg focus:outline-none focus:border-red-500"
+                    autoFocus
+                  />
+                  
+                  {/* Quick Location Presets */}
+                  <div className="space-y-2">
+                    <p className="text-sm text-gray-600 font-medium">Quick Locations:</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {quickLocations.map((loc, index) => (
+                        <button
+                          key={index}
+                          onClick={() => setLocation(loc)}
+                          className={`p-2 text-xs rounded-lg border transition-colors ${
+                            location === loc
+                              ? 'bg-red-50 border-red-300 text-red-700'
+                              : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
+                          }`}
+                        >
+                          {loc.split(',')[0]}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleLocationChange(location)}
+                      className="flex-1 bg-red-500 text-white py-2 rounded-lg text-sm font-medium hover:bg-red-600 transition-colors"
+                    >
+                      Save Location
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowLocationInput(false);
+                        setLocation('Park Street, Kolkata, 700016'); // Reset to default
+                      }}
+                      className="flex-1 bg-gray-300 text-gray-700 py-2 rounded-lg text-sm font-medium hover:bg-gray-400 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
-                <button className="text-red-500 text-sm font-medium ml-2 flex-shrink-0">Change</button>
-              </div>
+              ) : (
+                <div className="flex items-center justify-between bg-white p-3 rounded-lg shadow-sm">
+                  <div className="flex items-center gap-2 text-sm">
+                    <MapPin className="text-gray-400 w-4 h-4 flex-shrink-0" />
+                    <span className="truncate">{location}</span>
+                    {location !== 'Park Street, Kolkata, 700016' && (
+                      <span className="text-xs bg-blue-100 text-blue-600 px-2 py-1 rounded-full">
+                        Custom
+                      </span>
+                    )}
+                  </div>
+                  <button 
+                    onClick={() => setShowLocationInput(true)}
+                    className="text-red-500 text-sm font-medium ml-2 flex-shrink-0 hover:text-red-600"
+                  >
+                    Change
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="space-y-2">
@@ -249,6 +658,17 @@ function EmergencyReport() {
               </div>
             </div>
 
+            <div className="space-y-2">
+              <label className="text-lg font-semibold">Additional Details</label>
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Describe the emergency situation in detail..."
+                className="w-full p-3 border border-gray-200 rounded-lg resize-none focus:outline-none focus:border-red-500"
+                rows={3}
+              />
+            </div>
+
             <div className="flex items-center justify-between bg-white p-3 rounded-lg shadow-sm">
               <div className="flex items-center gap-2">
                 <Mic className="text-gray-400 w-4 h-4" />
@@ -257,9 +677,35 @@ function EmergencyReport() {
               <button className="text-red-500 text-sm font-medium">remove</button>
             </div>
 
-            <button className="w-full bg-red-500 text-white py-3 rounded-lg font-medium text-sm">
-              Submit Report
+            <button 
+              onClick={handleSubmitReport}
+              disabled={!selectedOption || isSubmitting}
+              className={`w-full py-3 rounded-lg font-medium text-sm transition-colors ${
+                selectedOption && !isSubmitting
+                  ? 'bg-red-500 text-white hover:bg-red-600' 
+                  : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+              }`}
+            >
+              {isSubmitting ? 'Submitting...' : 'Submit Report'}
             </button>
+
+            {submitSuccess && (
+              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                <div className="bg-white rounded-lg p-6 max-w-sm mx-4 text-center">
+                  <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <CheckCircle className="w-8 h-8 text-green-500" />
+                  </div>
+                  <h3 className="text-lg font-semibold text-gray-900 mb-2">Emergency Report Submitted!</h3>
+                  <p className="text-gray-600 mb-4">All users have been notified. Emergency services have been alerted.</p>
+                  <button
+                    onClick={() => setSubmitSuccess(false)}
+                    className="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 transition-colors"
+                  >
+                    OK
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -276,6 +722,9 @@ function MainApp() {
   const [error, setError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [hasWelcomed, setHasWelcomed] = useState(false);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [previousNotificationCount, setPreviousNotificationCount] = useState(0);
+  const [lastNotificationIds, setLastNotificationIds] = useState<string[]>([]);
 
   useEffect(() => {
     // Create audio element for emergency sound
@@ -311,6 +760,71 @@ function MainApp() {
       setHasWelcomed(false);
     }
   }, [user]);
+
+  // Listen for unread notifications count
+  // Function to play notification sound
+  const playNotificationSound = () => {
+    try {
+      console.log('🔔 Playing notification sound...');
+      const audio = new Audio(notificationSound);
+      audio.volume = 0.7; // Set volume to 70%
+      audio.play().catch(error => {
+        console.error('Error playing notification sound:', error);
+      });
+    } catch (error) {
+      console.error('Error creating notification audio:', error);
+    }
+  };
+
+  useEffect(() => {
+    if (!user) {
+      setUnreadNotifications(0);
+      setPreviousNotificationCount(0);
+      setLastNotificationIds([]);
+      return;
+    }
+
+    const notificationsRef = collection(db, 'notifications');
+    const q = query(
+      notificationsRef,
+      where('userId', '==', user.uid),
+      where('read', '==', false)
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot: any) => {
+      const newCount = snapshot.size;
+      const newNotificationIds: string[] = [];
+      
+      // Collect all notification IDs
+      snapshot.forEach((doc: any) => {
+        newNotificationIds.push(doc.id);
+      });
+      
+      setUnreadNotifications(newCount);
+      
+      // Check if there are new notifications (not just count change)
+      const hasNewNotifications = newNotificationIds.some(id => !lastNotificationIds.includes(id));
+      
+      console.log('📱 Notification update:', {
+        newCount,
+        previousCount: previousNotificationCount,
+        newIds: newNotificationIds,
+        lastIds: lastNotificationIds,
+        hasNewNotifications,
+        shouldPlaySound: hasNewNotifications && lastNotificationIds.length > 0
+      });
+      
+      // Play sound if new notifications arrived (but not on initial load)
+      if (hasNewNotifications && lastNotificationIds.length > 0) {
+        playNotificationSound();
+      }
+      
+      setPreviousNotificationCount(newCount);
+      setLastNotificationIds(newNotificationIds);
+    });
+
+    return () => unsubscribe();
+  }, [user, previousNotificationCount, lastNotificationIds]);
 
   const handleLogin = async (email: string, password: string) => {
     try {
@@ -422,6 +936,8 @@ function MainApp() {
         );
       case 'friends':
         return <FriendsPage onBack={() => setCurrentPage('profile')} />
+      case 'notifications':
+        return <NotificationsPage onBack={() => setCurrentPage('home')} />
       default:
         return (
           <div className="flex flex-col min-h-screen">
@@ -438,7 +954,19 @@ function MainApp() {
                   Login
                 </button>
               )}
-              {isAuthenticated && <Bell className="w-5 h-5 text-red-500" />}
+              {isAuthenticated && (
+                <button
+                  onClick={() => setCurrentPage('notifications')}
+                  className="relative p-2 hover:bg-gray-100 rounded-full transition-colors"
+                >
+                  <Bell className="w-5 h-5 text-red-500" />
+                  {unreadNotifications > 0 && (
+                    <div className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-medium">
+                      {unreadNotifications > 9 ? '9+' : unreadNotifications}
+                    </div>
+                  )}
+                </button>
+              )}
             </div>
 
             <div className="px-4 py-6 flex flex-col items-center">

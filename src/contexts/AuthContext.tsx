@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react'
 import { User, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut as firebaseSignOut, sendEmailVerification, sendPasswordResetEmail, fetchSignInMethodsForEmail, GoogleAuthProvider, signInWithPopup } from 'firebase/auth'
 import { doc, setDoc, getDoc } from 'firebase/firestore'
 import { auth, db } from '../lib/firebase'
+import { createWelcomeNotification } from '../lib/notificationUtils'
 
 type AuthContextType = {
   user: User | null
@@ -41,6 +42,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         email: email
       })
 
+      // Create welcome notification
+      try {
+        await createWelcomeNotification(createdUser.uid, name)
+      } catch (error) {
+        console.error('Error creating welcome notification:', error)
+      }
+
       try {
         await sendEmailVerification(createdUser)
       } catch (_) {
@@ -79,6 +87,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         phone: firebaseUser.phoneNumber ?? '',
         email: firebaseUser.email ?? ''
       })
+
+      // Create welcome notification for new Google users
+      try {
+        await createWelcomeNotification(firebaseUser.uid, firebaseUser.displayName ?? 'User')
+      } catch (error) {
+        console.error('Error creating welcome notification:', error)
+      }
     }
   }
 
