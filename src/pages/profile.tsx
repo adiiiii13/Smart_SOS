@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Settings, Bell, Shield, Heart, Clock, MapPin, Phone, Mail, ChevronRight, Award, LogOut, User, Users } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { getUserFriends } from '../lib/friendUtils';
 
 interface ProfilePageProps {
   onLogout: () => void;
@@ -9,6 +10,7 @@ interface ProfilePageProps {
 
 export function ProfilePage({ onLogout, onOpenFriends }: ProfilePageProps) {
   const { user } = useAuth();
+  const [friendCount, setFriendCount] = useState(0);
   const displayName = user?.displayName || 'User';
   const emailAddress = user?.email || 'user@example.com';
   const initials = displayName
@@ -18,10 +20,22 @@ export function ProfilePage({ onLogout, onOpenFriends }: ProfilePageProps) {
     .join('')
     .slice(0, 2)
     .toUpperCase();
+  
+  // Load friend count
+  useEffect(() => {
+    if (!user) return;
+    
+    const unsubscribe = getUserFriends(user.uid, (friends) => {
+      setFriendCount(friends.length);
+    });
+    
+    return () => unsubscribe();
+  }, [user]);
+  
   const userStats = [
     { icon: Heart, label: 'Lives Saved', value: '5' },
     { icon: Clock, label: 'Response Time', value: '3m' },
-    { icon: Award, label: 'Rank', value: 'Gold' }
+    { icon: Users, label: 'Friends', value: friendCount.toString() }
   ];
 
   const menuItems = [
@@ -46,6 +60,11 @@ export function ProfilePage({ onLogout, onOpenFriends }: ProfilePageProps) {
           >
             <Users className="w-5 h-5" />
             <span className="text-sm font-medium">Friends</span>
+            {friendCount > 0 && (
+              <span className="bg-white/20 text-white text-xs px-2 py-1 rounded-full">
+                {friendCount}
+              </span>
+            )}
           </button>
         </div>
 
@@ -90,6 +109,45 @@ export function ProfilePage({ onLogout, onOpenFriends }: ProfilePageProps) {
             <div className="text-xs text-gray-600">{stat.label}</div>
           </div>
         ))}
+      </div>
+
+      {/* Friends Section */}
+      <div className="p-4">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold">Friends</h2>
+          <button
+            onClick={onOpenFriends}
+            className="text-sm text-red-500 hover:text-red-600 font-medium"
+          >
+            View All
+          </button>
+        </div>
+        <div className="bg-white rounded-xl p-4">
+          {friendCount === 0 ? (
+            <div className="text-center py-6">
+              <Users className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+              <p className="text-gray-500 text-sm">No friends yet</p>
+              <button
+                onClick={onOpenFriends}
+                className="mt-2 text-sm text-red-500 hover:text-red-600 font-medium"
+              >
+                Find Friends
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
+                  <Users className="w-5 h-5 text-red-600" />
+                </div>
+                <div>
+                  <div className="font-medium">You have {friendCount} friend{friendCount !== 1 ? 's' : ''}</div>
+                  <div className="text-sm text-gray-500">Tap to manage your connections</div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Certifications */}
