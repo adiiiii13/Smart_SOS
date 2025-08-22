@@ -1,13 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { AlertTriangle, Clock, Users, MapPin, ArrowRight, RefreshCw } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { getRecentEmergencies, getEmergenciesByArea, generateRiskPredictions, EmergencyReport, EmergencyPrediction } from '../lib/emergencyUtils';
-import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { getRecentEmergencies, generateRiskPredictions, EmergencyReport, EmergencyPrediction } from '../lib/emergencyUtils';
+import { supabase, TABLES } from '../lib/supabase';
 
 export function PredictionPage() {
   const { user } = useAuth();
-  const [selectedArea, setSelectedArea] = useState('Kothrud');
+  const [selectedArea] = useState('Kothrud');
   const [timeRange, setTimeRange] = useState('24h');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -40,37 +39,13 @@ export function PredictionPage() {
   useEffect(() => {
     loadData();
     
-    // Set up real-time listener for emergencies
-    const emergencyRef = collection(db, 'emergencies');
-    const q = query(emergencyRef, orderBy('timestamp', 'desc'), limit(20));
-    
-    const unsubscribe = onSnapshot(q, (snapshot: any) => {
-      const emergencies: EmergencyReport[] = [];
-      snapshot.forEach((doc: any) => {
-        const data = doc.data();
-        emergencies.push({
-          id: doc.id,
-          userId: data.userId,
-          userName: data.userName,
-          emergencyType: data.emergencyType,
-          specificType: data.specificType,
-          location: data.location,
-          description: data.description,
-          status: data.status,
-          priority: data.priority,
-          timestamp: data.timestamp?.toDate() || new Date(),
-          coordinates: data.coordinates,
-          images: data.images,
-          audioUrl: data.audioUrl
-        });
-      });
-      
-      setRecentEmergencies(emergencies);
-      const predictions = generateRiskPredictions(emergencies);
-      setEmergencyPredictions(predictions);
-    });
-
-    return () => unsubscribe();
+    // Supabase real-time subscription
+    const channel = supabase.channel('realtime_emergencies')
+      .on('postgres_changes', { event: '*', schema: 'public', table: TABLES.EMERGENCIES }, () => {
+        loadData();
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   const formatTime = (timestamp: Date) => {

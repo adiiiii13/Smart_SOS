@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { X, User, Mail, Phone, Check, X as XIcon, Clock } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { 
@@ -8,8 +8,7 @@ import {
   checkFriendRequest,
   UserProfile as FriendUserProfile
 } from '../lib/friendUtils';
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { supabase, TABLES } from '../lib/supabase';
 
 interface UserProfileModalProps {
   isOpen: boolean;
@@ -41,13 +40,25 @@ export function UserProfileModal({
       try {
         setLoading(true);
         
-        // Get user profile
-        const userDoc = await getDoc(doc(db, 'profiles', userId));
-        if (userDoc.exists()) {
-          const data = userDoc.data();
+        // Get user profile. Support schemas where profiles has id or user_id referencing auth.users.
+        let { data, error } = await supabase
+          .from(TABLES.PROFILES)
+          .select('id, user_id, full_name, email, phone')
+          .eq('id', userId)
+          .maybeSingle();
+        if (!data) {
+          const alt = await supabase
+            .from(TABLES.PROFILES)
+            .select('id, user_id, full_name, email, phone')
+            .eq('user_id', userId)
+            .maybeSingle();
+          data = alt.data as any;
+          error = alt.error as any;
+        }
+        if (!error && data) {
           setUserProfile({
-            uid: userDoc.id,
-            displayName: data.displayName || 'Unknown User',
+      uid: (data as any).user_id || data.id,
+            displayName: data.full_name || 'Unknown User',
             email: data.email || '',
             phone: data.phone || ''
           });

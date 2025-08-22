@@ -1,11 +1,19 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
-import { User, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut as firebaseSignOut, sendEmailVerification, sendPasswordResetEmail, fetchSignInMethodsForEmail, GoogleAuthProvider, signInWithPopup } from 'firebase/auth'
-import { doc, setDoc, getDoc } from 'firebase/firestore'
-import { auth, db } from '../lib/firebase'
+import { supabase, TABLES } from '../lib/supabase'
 import { createWelcomeNotification } from '../lib/notificationUtils'
+import { createProfile, findProfileByUserId } from '../lib/supabaseUtils'
+
+// Lightweight adapter so existing code using user.uid continues to work
+export interface AppUser {
+  id: string
+  uid: string // alias for id (Firebase compatibility)
+  email: string | null
+  displayName: string | null
+  phoneNumber: string | null
+}
 
 type AuthContextType = {
-  user: User | null
+  user: AppUser | null
   signIn: (email: string, password: string) => Promise<void>
   signUp: (name: string, email: string, phone: string, password: string) => Promise<void>
   signOut: () => Promise<void>
@@ -16,84 +24,132 @@ type AuthContextType = {
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null)
+  const [user, setUser] = useState<AppUser | null>(null)
+
+  // Convert Supabase session user to AppUser
+  const toAppUser = (u: any): AppUser => ({
+    id: u.id,
+    uid: u.id,
+    email: u.email,
+    displayName: u.user_metadata?.full_name || u.user_metadata?.name || null,
+    phoneNumber: u.phone || u.phone_number || null
+  })
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      setUser(firebaseUser)
+    let mounted = true
+    // Initial session fetch
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return
+      if (data.session?.user) setUser(toAppUser(data.session.user))
     })
-
-    return () => unsubscribe()
+    // Auth state changes
+    const { data: listener } = supabase.auth.onAuthStateChange((_evt, session) => {
+      if (!mounted) return
+      if (session?.user) {
+        setUser(toAppUser(session.user))
+      } else {
+        setUser(null)
+      }
+    })
+    return () => {
+      mounted = false
+      listener.subscription.unsubscribe()
+    }
   }, [])
 
   const signIn = async (email: string, password: string) => {
-    await signInWithEmailAndPassword(auth, email, password)
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    if (error) throw error
   }
 
   const signUp = async (name: string, email: string, phone: string, password: string) => {
-    try {
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password)
-      const createdUser = userCredential.user
-
-      await setDoc(doc(db, 'profiles', createdUser.uid), {
-        id: createdUser.uid,
-        full_name: name,
-        phone: phone,
-        email: email
-      })
-
-      // Create welcome notification
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: { data: { full_name: name, phone } }
+    })
+    if (error) throw error
+    if (data.user) {
       try {
-        await createWelcomeNotification(createdUser.uid, name)
-      } catch (error) {
-        console.error('Error creating welcome notification:', error)
+  // Ensure custom users table row (needed for FK in emergencies)
+  await ensureUserRow(data.user.id, email, name, phone)
+        // Create profile row
+        await createProfile({
+          user_id: data.user.id,
+          full_name: name,
+          email,
+            phone
+        })
+        await createWelcomeNotification(data.user.id, name)
+      } catch (e) {
+        console.error('Profile creation / welcome notification failed', e)
       }
-
-      try {
-        await sendEmailVerification(createdUser)
-      } catch (_) {
-        // non-fatal
-      }
-    } catch (err: any) {
-      if (err && err.code === 'auth/email-already-in-use') {
-        const methods = await fetchSignInMethodsForEmail(auth, email)
-        const providerList = methods.length ? ` with: ${methods.join(', ')}` : ''
-        throw new Error(`Email already has an account${providerList}. Please sign in or reset your password.`)
-      }
-      throw err
     }
   }
 
   const signOut = async () => {
-    await firebaseSignOut(auth)
+    const { error } = await supabase.auth.signOut()
+    if (error) throw error
   }
 
   const resetPassword = async (email: string) => {
-    await sendPasswordResetEmail(auth, email)
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: window.location.origin + '/reset-password'
+    })
+    if (error) throw error
   }
 
   const signInWithGoogle = async () => {
-    const provider = new GoogleAuthProvider()
-    const result = await signInWithPopup(auth, provider)
-    const firebaseUser = result.user
+    const { error } = await supabase.auth.signInWithOAuth({ provider: 'google' })
+    if (error) throw error
+    // After redirect, onAuthStateChange will trigger. Profile creation handled lazily below.
+  }
 
-    // Ensure profile document exists
-    const profileRef = doc(db, 'profiles', firebaseUser.uid)
-    const snap = await getDoc(profileRef)
-    if (!snap.exists()) {
-      await setDoc(profileRef, {
-        id: firebaseUser.uid,
-        full_name: firebaseUser.displayName ?? '',
-        phone: firebaseUser.phoneNumber ?? '',
-        email: firebaseUser.email ?? ''
-      })
-
-      // Create welcome notification for new Google users
+  // Ensure a profile exists once user is set
+  useEffect(() => {
+    if (!user) return
+    (async () => {
       try {
-        await createWelcomeNotification(firebaseUser.uid, firebaseUser.displayName ?? 'User')
-      } catch (error) {
-        console.error('Error creating welcome notification:', error)
+        await ensureUserRow(user.id, user.email || '', user.displayName || 'User', user.phoneNumber || '')
+        await findProfileByUserId(user.id)
+      } catch (e: any) {
+        // If not found, create
+        try {
+          await createProfile({
+            user_id: user.id,
+            full_name: user.displayName || 'User',
+            email: user.email || '',
+            phone: user.phoneNumber || ''
+          })
+          await createWelcomeNotification(user.id, user.displayName || 'User')
+        } catch (err) {
+          console.error('Failed to auto-create profile', err)
+        }
       }
+    })()
+  }, [user?.id])
+
+  // Helper to ensure a row exists in custom users table for FK references
+  const ensureUserRow = async (id: string, email: string, name: string, phone?: string | null) => {
+    try {
+      const { data: existing, error } = await supabase
+        .from(TABLES.USERS)
+        .select('id')
+        .eq('id', id)
+        .maybeSingle()
+      if (error) {
+        // If table missing or permission issue, log and continue (won't block auth)
+        console.warn('users table select error (can ignore if schema changed):', error.message)
+        return
+      }
+      if (!existing) {
+        const { error: insertErr } = await supabase
+          .from(TABLES.USERS)
+          .insert([{ id, email, display_name: name, phone }])
+        if (insertErr) console.warn('users table insert failed:', insertErr.message)
+      }
+    } catch (err) {
+      console.warn('ensureUserRow unexpected error:', err)
     }
   }
 

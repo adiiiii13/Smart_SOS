@@ -1,9 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { Bell, X, AlertTriangle, Info, CheckCircle, Clock, MapPin, Phone, MessageCircle, ArrowLeft, Plus, Volume2 } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Bell, X, AlertTriangle, Info, CheckCircle, Clock, MapPin, Phone, ArrowLeft, Plus, Volume2 } from 'lucide-react';
 import notificationSound from '../assets/Notifi.wav';
 import { useAuth } from '../contexts/AuthContext';
-import { doc, collection, query, where, orderBy, onSnapshot, updateDoc, deleteDoc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { supabase, TABLES } from '../lib/supabase';
 import { createSampleNotifications } from '../lib/notificationUtils';
 
 interface Notification {
@@ -19,13 +18,16 @@ interface Notification {
   priority: 'high' | 'medium' | 'low';
 }
 
-export function NotificationsPage({ onBack }: { onBack: () => void }) {
+export function NotificationsPage({ onBack, onUnreadDelta }: { onBack: () => void; onUnreadDelta?: (delta: number) => void }) {
   const { user } = useAuth();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [filter, setFilter] = useState<'all' | 'unread' | 'emergency'>('all');
   const [loading, setLoading] = useState(true);
   const [isCreatingSamples, setIsCreatingSamples] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Track gesture start positions per-notification for swipe actions
+  const touchStartXRef = useRef<Record<string, number>>({});
+  const mouseStartXRef = useRef<Record<string, number>>({});
 
   // Function to test notification sound
   const testNotificationSound = () => {
@@ -48,83 +50,152 @@ export function NotificationsPage({ onBack }: { onBack: () => void }) {
       return;
     }
 
-    console.log('Setting up Firebase listener for user:', user.uid);
-
-    try {
-      // Subscribe to notifications for the current user
-      const notificationsRef = collection(db, 'notifications');
-      const q = query(
-        notificationsRef,
-        where('userId', '==', user.uid)
-      );
-
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        console.log('Firebase snapshot received, size:', snapshot.size);
-        const notifs: Notification[] = [];
-        snapshot.forEach((doc) => {
-          const data = doc.data();
-          try {
-            notifs.push({
-              id: doc.id,
-              type: data.type || 'info',
-              title: data.title || '',
-              message: data.message || '',
-              timestamp: data.timestamp?.toDate() || new Date(),
-              read: data.read || false,
-              location: data.location,
-              phone: data.phone,
-              emergencyType: data.emergencyType,
-              priority: data.priority || 'medium'
-            });
-          } catch (error) {
-            console.error('Error processing notification:', error, data);
-          }
-        });
-        setNotifications(notifs);
-        setLoading(false);
-        setError(null);
-      }, (error) => {
+    console.log('Setting up Supabase notifications fetch for user:', user.uid);
+    let active = true;
+    const load = async () => {
+      const { data, error } = await supabase
+        .from(TABLES.NOTIFICATIONS)
+        .select('*')
+        .eq('user_id', user.uid)
+        .order('created_at', { ascending: false });
+      if (!active) return;
+      if (error) {
         console.error('Error fetching notifications:', error);
         setError('Failed to load notifications');
-        setLoading(false);
-      });
-
-      return () => unsubscribe();
-    } catch (error) {
-      console.error('Error setting up notifications listener:', error);
-      setError('Failed to connect to notifications');
+      } else {
+        const notifs: Notification[] = (data || []).map(d => ({
+          id: d.id,
+          type: d.type || 'info',
+          title: d.title || '',
+          message: d.message || '',
+          timestamp: new Date(d.created_at),
+          read: d.is_read || false,
+          location: d.location || undefined,
+          phone: d.phone || undefined,
+          emergencyType: d.emergency_type || undefined,
+          priority: d.priority || 'medium'
+        }));
+        setNotifications(notifs);
+        setError(null);
+      }
       setLoading(false);
-    }
+    };
+    load();
+    // Subscribe to realtime changes
+    const channel = supabase.channel('user_notifications_' + user.uid)
+      .on('postgres_changes', { event: '*', schema: 'public', table: TABLES.NOTIFICATIONS, filter: `user_id=eq.${user.uid}` }, () => load())
+      .subscribe();
+    return () => { active = false; supabase.removeChannel(channel); };
   }, [user]);
 
   const markAsRead = async (notificationId: string) => {
-    try {
-      const notificationRef = doc(db, 'notifications', notificationId);
-      await updateDoc(notificationRef, { read: true });
-    } catch (error) {
+    // Determine if it was unread before updating
+    const wasUnread = notifications.find(n => n.id === notificationId)?.read === false;
+    // Optimistic UI update
+    setNotifications(prev => prev.map(n => n.id === notificationId ? { ...n, read: true } : n));
+    if (wasUnread) onUnreadDelta?.(-1);
+    const { error } = await supabase
+      .from(TABLES.NOTIFICATIONS)
+      .update({ is_read: true })
+      .eq('id', notificationId);
+    if (error) {
       console.error('Error marking notification as read:', error);
+      // Revert on failure
+      setNotifications(prev => prev.map(n => n.id === notificationId ? { ...n, read: false } : n));
+      if (wasUnread) onUnreadDelta?.(1);
     }
   };
 
   const deleteNotification = async (notificationId: string) => {
-    try {
-      const notificationRef = doc(db, 'notifications', notificationId);
-      await deleteDoc(notificationRef);
-    } catch (error) {
+    const wasUnread = notifications.find(n => n.id === notificationId)?.read === false;
+    // Optimistic UI: remove locally and adjust badge if it was unread
+    setNotifications(prev => prev.filter(n => n.id !== notificationId));
+    if (wasUnread) onUnreadDelta?.(-1);
+    const { error } = await supabase
+      .from(TABLES.NOTIFICATIONS)
+      .delete()
+      .eq('id', notificationId);
+    if (error) {
       console.error('Error deleting notification:', error);
+      // Revert on failure by refetching list (simple approach)
+      if (user) {
+        const { data, error: refetchError } = await supabase
+          .from(TABLES.NOTIFICATIONS)
+          .select('*')
+          .eq('user_id', user.uid)
+          .order('created_at', { ascending: false });
+        if (!refetchError) {
+          const notifs: Notification[] = (data || []).map(d => ({
+            id: d.id,
+            type: d.type || 'info',
+            title: d.title || '',
+            message: d.message || '',
+            timestamp: new Date(d.created_at),
+            read: d.is_read || false,
+            location: d.location || undefined,
+            phone: d.phone || undefined,
+            emergencyType: d.emergency_type || undefined,
+            priority: d.priority || 'medium'
+          }));
+          setNotifications(notifs);
+        }
+      }
+      if (wasUnread) onUnreadDelta?.(1);
     }
   };
 
   const markAllAsRead = async () => {
-    try {
-      const unreadNotifications = notifications.filter(n => !n.read);
-      const updatePromises = unreadNotifications.map(notification =>
-        updateDoc(doc(db, 'notifications', notification.id), { read: true })
-      );
-      await Promise.all(updatePromises);
-    } catch (error) {
+    const ids = notifications.filter(n => !n.read).map(n => n.id);
+    if (!ids.length) return;
+    // Optimistic UI update
+    setNotifications(prev => prev.map(n => ids.includes(n.id) ? { ...n, read: true } : n));
+    onUnreadDelta?.(-ids.length);
+    const { error } = await supabase
+      .from(TABLES.NOTIFICATIONS)
+      .update({ is_read: true })
+      .in('id', ids);
+    if (error) {
       console.error('Error marking all notifications as read:', error);
+      // Revert on failure
+      setNotifications(prev => prev.map(n => ids.includes(n.id) ? { ...n, read: false } : n));
+      onUnreadDelta?.(ids.length);
     }
+  };
+
+  // Swipe/right-click gesture helpers
+  const SWIPE_THRESHOLD = 60; // pixels to the right to trigger mark-as-read
+  const handleTouchStart = (id: string, e: React.TouchEvent<HTMLDivElement>) => {
+    touchStartXRef.current[id] = e.touches[0]?.clientX ?? 0;
+  };
+  const handleTouchEnd = (id: string, e: React.TouchEvent<HTMLDivElement>) => {
+    const startX = touchStartXRef.current[id] ?? 0;
+    const endX = e.changedTouches[0]?.clientX ?? 0;
+    if (!startX || !endX) return;
+    const dx = endX - startX;
+    if (dx > SWIPE_THRESHOLD) {
+      // Swipe right detected -> mark as read
+      const notif = notifications.find(n => n.id === id);
+      if (notif && !notif.read) markAsRead(id);
+    }
+  };
+  const handleMouseDown = (id: string, e: React.MouseEvent<HTMLDivElement>) => {
+    mouseStartXRef.current[id] = e.clientX ?? 0;
+  };
+  const handleMouseUp = (id: string, e: React.MouseEvent<HTMLDivElement>) => {
+    const startX = mouseStartXRef.current[id] ?? 0;
+    const endX = e.clientX ?? 0;
+    const dx = endX - startX;
+    if (dx > SWIPE_THRESHOLD) {
+      const notif = notifications.find(n => n.id === id);
+      if (notif && !notif.read) markAsRead(id);
+    }
+  };
+  const handleItemClick = (id: string, e: React.MouseEvent<HTMLDivElement>) => {
+    // Ignore clicks originating from buttons (e.g., delete/mark buttons)
+    const target = e.target as HTMLElement;
+    if (target.closest('button')) return;
+    const notif = notifications.find(n => n.id === id);
+    if (notif && !notif.read) markAsRead(id);
   };
 
   const createSampleNotificationsHandler = async () => {
@@ -334,12 +405,17 @@ export function NotificationsPage({ onBack }: { onBack: () => void }) {
             </p>
           </div>
         ) : (
-          filteredNotifications.map((notification) => (
+      filteredNotifications.map((notification) => (
             <div
               key={notification.id}
               className={`bg-white rounded-lg shadow-sm border-l-4 ${getPriorityColor(notification.priority)} p-4 transition-all hover:shadow-md ${
                 !notification.read ? 'ring-2 ring-red-100' : ''
               }`}
+        onTouchStart={(e) => handleTouchStart(notification.id, e)}
+        onTouchEnd={(e) => handleTouchEnd(notification.id, e)}
+        onMouseDown={(e) => handleMouseDown(notification.id, e)}
+        onMouseUp={(e) => handleMouseUp(notification.id, e)}
+              onClick={(e) => handleItemClick(notification.id, e)}
             >
               <div className="flex items-start justify-between">
                 <div className="flex items-start gap-3 flex-1">

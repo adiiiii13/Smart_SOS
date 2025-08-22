@@ -1,0 +1,157 @@
+import { ObjectId } from 'mongodb';
+import { getDatabase, COLLECTIONS } from './mongodb';
+
+// Generic CRUD operations
+export async function createDocument(collection: string, data: any) {
+  try {
+    const db = getDatabase();
+    const result = await db.collection(collection).insertOne({
+      ...data,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+    return result.insertedId.toString();
+  } catch (error) {
+    console.error(`Error creating document in ${collection}:`, error);
+    throw error;
+  }
+}
+
+export async function findDocuments(collection: string, filter: any = {}, options: any = {}) {
+  try {
+    const db = getDatabase();
+    const cursor = db.collection(collection).find(filter, options);
+    return await cursor.toArray();
+  } catch (error) {
+    console.error(`Error finding documents in ${collection}:`, error);
+    throw error;
+  }
+}
+
+export async function findDocument(collection: string, filter: any) {
+  try {
+    const db = getDatabase();
+    return await db.collection(collection).findOne(filter);
+  } catch (error) {
+    console.error(`Error finding document in ${collection}:`, error);
+    throw error;
+  }
+}
+
+export async function updateDocument(collection: string, filter: any, update: any) {
+  try {
+    const db = getDatabase();
+    const result = await db.collection(collection).updateOne(filter, {
+      $set: {
+        ...update,
+        updatedAt: new Date()
+      }
+    });
+    return result.modifiedCount > 0;
+  } catch (error) {
+    console.error(`Error updating document in ${collection}:`, error);
+    throw error;
+  }
+}
+
+export async function deleteDocument(collection: string, filter: any) {
+  try {
+    const db = getDatabase();
+    const result = await db.collection(collection).deleteOne(filter);
+    return result.deletedCount > 0;
+  } catch (error) {
+    console.error(`Error deleting document in ${collection}:`, error);
+    throw error;
+  }
+}
+
+// User operations
+export async function createUser(userData: any) {
+  return await createDocument(COLLECTIONS.USERS, userData);
+}
+
+export async function findUserByEmail(email: string) {
+  return await findDocument(COLLECTIONS.USERS, { email });
+}
+
+export async function findUserById(userId: string) {
+  return await findDocument(COLLECTIONS.USERS, { _id: new ObjectId(userId) });
+}
+
+// Profile operations
+export async function createProfile(profileData: any) {
+  return await createDocument(COLLECTIONS.PROFILES, profileData);
+}
+
+export async function findProfileByUserId(userId: string) {
+  return await findDocument(COLLECTIONS.PROFILES, { userId });
+}
+
+export async function updateProfile(userId: string, updateData: any) {
+  return await updateDocument(COLLECTIONS.PROFILES, { userId }, updateData);
+}
+
+// Notification operations
+export async function createNotification(notificationData: any) {
+  return await createDocument(COLLECTIONS.NOTIFICATIONS, notificationData);
+}
+
+export async function findUserNotifications(userId: string) {
+  return await findDocuments(COLLECTIONS.NOTIFICATIONS, 
+    { userId }, 
+    { sort: { createdAt: -1 } }
+  );
+}
+
+export async function markNotificationAsRead(notificationId: string) {
+  return await updateDocument(COLLECTIONS.NOTIFICATIONS, 
+    { _id: new ObjectId(notificationId) }, 
+    { isRead: true }
+  );
+}
+
+// Emergency operations
+export async function createEmergency(emergencyData: any) {
+  return await createDocument(COLLECTIONS.EMERGENCIES, emergencyData);
+}
+
+export async function findRecentEmergencies(limit: number = 10) {
+  return await findDocuments(COLLECTIONS.EMERGENCIES, 
+    {}, 
+    { sort: { createdAt: -1 }, limit }
+  );
+}
+
+// Friend operations
+export async function createFriendRequest(requestData: any) {
+  return await createDocument(COLLECTIONS.FRIEND_REQUESTS, requestData);
+}
+
+export async function findPendingFriendRequests(userId: string) {
+  return await findDocuments(COLLECTIONS.FRIEND_REQUESTS, 
+    { toUserId: userId, status: 'pending' }, 
+    { sort: { createdAt: -1 } }
+  );
+}
+
+export async function updateFriendRequestStatus(requestId: string, status: string) {
+  return await updateDocument(COLLECTIONS.FRIEND_REQUESTS, 
+    { _id: new ObjectId(requestId) }, 
+    { status }
+  );
+}
+
+export async function createFriendship(friendshipData: any) {
+  return await createDocument(COLLECTIONS.FRIENDS, friendshipData);
+}
+
+export async function findUserFriends(userId: string) {
+  return await findDocuments(COLLECTIONS.FRIENDS, 
+    { userId, status: 'active' }, 
+    { sort: { createdAt: -1 } }
+  );
+}
+
+export async function removeFriendship(friendshipId: string) {
+  return await deleteDocument(COLLECTIONS.FRIENDS, { _id: new ObjectId(friendshipId) });
+}

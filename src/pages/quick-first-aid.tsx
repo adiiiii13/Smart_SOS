@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Heart, Search, Phone, PlayCircle, BookOpen, Star, ArrowRight, AlertTriangle } from 'lucide-react';
 
 type QuickActionKey = 'call' | 'video' | 'manual' | 'tips';
