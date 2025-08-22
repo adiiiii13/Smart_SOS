@@ -1,0 +1,49 @@
+import { MongoClient, Db } from 'mongodb';
+
+// MongoDB connection string - you'll need to update this with your actual connection
+const MONGODB_URI = 'mongodb://localhost:27017/sos_app';
+const DB_NAME = 'sos_app';
+
+let client: MongoClient;
+let db: Db;
+
+export async function connectToDatabase() {
+  if (!client) {
+    try {
+      client = new MongoClient(MONGODB_URI);
+      await client.connect();
+      console.log('✅ Connected to MongoDB');
+      
+      db = client.db(DB_NAME);
+      return db;
+    } catch (error) {
+      console.error('❌ MongoDB connection error:', error);
+      throw error;
+    }
+  }
+  return db;
+}
+
+export async function closeDatabase() {
+  if (client) {
+    await client.close();
+    console.log('🔌 MongoDB connection closed');
+  }
+}
+
+export function getDatabase() {
+  if (!db) {
+    throw new Error('Database not connected. Call connectToDatabase() first.');
+  }
+  return db;
+}
+
+// Database collections
+export const COLLECTIONS = {
+  USERS: 'users',
+  PROFILES: 'profiles',
+  NOTIFICATIONS: 'notifications',
+  EMERGENCIES: 'emergencies',
+  FRIEND_REQUESTS: 'friend_requests',
+  FRIENDS: 'friends'
+} as const;

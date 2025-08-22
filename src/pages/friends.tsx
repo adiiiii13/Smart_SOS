@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react'
-import { ChevronLeft, UserPlus, Search, User, Check, X, Clock, Users, UserCheck, UserX } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { ChevronLeft, UserPlus, Search, Check, X, Clock, Users, UserX, Eye } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { 
   searchUsers, 
@@ -16,6 +16,8 @@ import {
   Friend
 } from '../lib/friendUtils'
 import { createNotification } from '../lib/notificationUtils'
+import { supabase, TABLES } from '../lib/supabase'
+import { UserProfileModal } from '../components/UserProfileModal'
 
 interface FriendsPageProps {
   onBack: () => void
@@ -31,6 +33,8 @@ export function FriendsPage({ onBack }: FriendsPageProps) {
   const [pendingRequests, setPendingRequests] = useState<FriendRequest[]>([])
   const [searchingUsers, setSearchingUsers] = useState<Set<string>>(new Set())
   const [friendRequests, setFriendRequests] = useState<Set<string>>(new Set())
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [profileUserId, setProfileUserId] = useState<string | null>(null)
 
   // Load friends and pending requests
   useEffect(() => {
@@ -85,6 +89,20 @@ export function FriendsPage({ onBack }: FriendsPageProps) {
     }
   }
 
+  // Debounced live suggestions on typing
+  useEffect(() => {
+    if (!user) return
+    const term = searchQuery.trim()
+    if (!term) { setSearchResults([]); setSearchingUsers(new Set()); setFriendRequests(new Set()); return }
+    const t = setTimeout(() => { handleSearch() }, 350)
+    return () => clearTimeout(t)
+  }, [searchQuery, user])
+
+  const openUserProfile = (uid: string) => {
+    setProfileUserId(uid)
+    setProfileOpen(true)
+  }
+
   // Send friend request
   const handleSendFriendRequest = async (toUser: UserProfile) => {
     if (!user) return
@@ -112,8 +130,9 @@ export function FriendsPage({ onBack }: FriendsPageProps) {
       
       alert('Friend request sent successfully!')
     } catch (error) {
-      console.error('Error sending friend request:', error)
-      alert('Failed to send friend request. Please try again.')
+  console.error('Error sending friend request:', error)
+  const message = error instanceof Error ? error.message : 'Unknown error'
+  alert(`Failed to send friend request.\n${message}`)
     }
   }
 
@@ -209,33 +228,19 @@ export function FriendsPage({ onBack }: FriendsPageProps) {
   // Debug function to check database status
   const handleDebugDatabase = async () => {
     if (!user) return
-    
     try {
-      console.log('🔍 Debugging database for user:', user.uid)
-      
-      // Check if user has any notifications
-      const notificationsRef = collection(db, 'notifications')
-      const notificationsQuery = query(notificationsRef, where('userId', '==', user.uid))
-      const notificationsSnapshot = await getDocs(notificationsQuery)
-      
-      console.log('📱 Notifications found:', notificationsSnapshot.size)
-      notificationsSnapshot.forEach(doc => {
-        console.log('Notification:', doc.data())
-      })
-      
-      // Check if user has any friend requests
-      const requestsRef = collection(db, 'friendRequests')
-      const requestsQuery = query(requestsRef, where('toUserId', '==', user.uid))
-      const requestsSnapshot = await getDocs(requestsQuery)
-      
-      console.log('👥 Friend requests found:', requestsSnapshot.size)
-      requestsSnapshot.forEach(doc => {
-        console.log('Friend request:', doc.data())
-      })
-      
-      alert(`Debug complete! Check console for details.\nNotifications: ${notificationsSnapshot.size}\nFriend requests: ${requestsSnapshot.size}`)
-    } catch (error) {
-      console.error('Error debugging database:', error)
+      console.log('🔍 Debugging Supabase for user:', user.uid)
+      const [{ data: notifications, error: notifErr }, { data: requests, error: reqErr }] = await Promise.all([
+        supabase.from(TABLES.NOTIFICATIONS).select('*').eq('user_id', user.uid).limit(50),
+        supabase.from(TABLES.FRIEND_REQUESTS).select('*').eq('to_user_id', user.uid).limit(50)
+      ])
+      if (notifErr) console.error('Notification query error:', notifErr)
+      if (reqErr) console.error('Friend request query error:', reqErr)
+      console.log('📱 Notifications found:', notifications?.length || 0, notifications)
+      console.log('👥 Friend requests found:', requests?.length || 0, requests)
+      alert(`Debug complete! Check console for details.\nNotifications: ${notifications?.length || 0}\nFriend requests: ${requests?.length || 0}`)
+    } catch (e) {
+      console.error('Error debugging Supabase:', e)
       alert('Failed to debug database. Check console for error.')
     }
   }
@@ -381,7 +386,7 @@ export function FriendsPage({ onBack }: FriendsPageProps) {
               <h3 className="font-medium text-gray-900">Search Results</h3>
               {searchResults.map(user => (
                 <div key={user.uid} className="bg-white p-4 rounded-xl flex items-center justify-between border shadow-sm">
-                  <div className="flex items-center gap-3">
+                  <button onClick={() => openUserProfile(user.uid)} className="flex items-center gap-3 text-left hover:opacity-90">
                     <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center">
                       <span className="text-lg font-semibold text-blue-600">
                         {user.displayName.charAt(0).toUpperCase()}
@@ -391,8 +396,11 @@ export function FriendsPage({ onBack }: FriendsPageProps) {
                       <div className="font-medium text-gray-900">{user.displayName}</div>
                       <div className="text-sm text-gray-500">{user.email}</div>
                     </div>
-          </div>
+                  </button>
                   <div className="flex items-center gap-2">
+                    <button onClick={() => openUserProfile(user.uid)} className="flex items-center gap-1 px-3 py-2 bg-gray-100 text-gray-700 text-sm rounded-lg hover:bg-gray-200 transition-colors">
+                      <Eye className="w-4 h-4" /> View
+                    </button>
                     {searchingUsers.has(user.uid) && (
                       <button
                         onClick={() => handleSendFriendRequest(user)}
@@ -465,6 +473,15 @@ export function FriendsPage({ onBack }: FriendsPageProps) {
             ))
           )}
         </div>
+      )}
+
+      {/* Profile Modal */}
+      {profileUserId && (
+        <UserProfileModal
+          isOpen={profileOpen}
+          onClose={() => setProfileOpen(false)}
+          userId={profileUserId}
+        />
       )}
     </div>
   )

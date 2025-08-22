@@ -1,5 +1,4 @@
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from './firebase';
+import { supabase, TABLES } from './supabase';
 
 export interface CreateNotificationData {
   userId: string;
@@ -20,18 +19,25 @@ export interface CreateNotificationData {
 
 export const createNotification = async (data: CreateNotificationData) => {
   try {
-    const notificationsRef = collection(db, 'notifications');
-    await addDoc(notificationsRef, {
-      ...data,
-      timestamp: serverTimestamp(),
-      read: false,
-      priority: data.priority || 'medium'
-    });
+    const { error } = await supabase.from(TABLES.NOTIFICATIONS).insert([{ 
+      user_id: data.userId,
+      type: data.type,
+      title: data.title,
+      message: data.message,
+      priority: data.priority || 'medium',
+      action_type: data.actionType,
+      action_data: data.actionData || null,
+      location: data.location,
+      phone: data.phone,
+      emergency_type: data.emergencyType,
+      is_read: false
+    }]);
+    if (error) throw error;
   } catch (error) {
     console.error('Error creating notification:', error);
     throw error;
   }
-};
+}
 
 export const createEmergencyNotification = async (
   userId: string,

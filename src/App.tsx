@@ -2,9 +2,9 @@ import { useState, useEffect, useRef } from 'react';
 import emergencySiren from './assets/dirty-siren-40635.mp3';
 import notificationSound from './assets/Notifi.wav';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
-import { db } from './lib/firebase';
+import { supabase, TABLES } from './lib/supabase';
 import { submitEmergencyReport } from './lib/emergencyUtils';
+// import { connectToDatabase } from './lib/mongodb';
 
 interface SpeechRecognitionEvent {
   results: {
@@ -23,7 +23,7 @@ interface SpeechRecognitionInstance extends EventTarget {
   stop(): void;
   abort(): void;
   onresult: (event: SpeechRecognitionEvent) => void;
-  onerror: () => void;
+  onerror: (event: any) => void; // broaden to capture event details
   onend: () => void;
 }
 
@@ -38,7 +38,7 @@ declare global {
   }
 }
 
-import { Bell, Home, Stethoscope, Activity, UserCircle, Phone, MessageCircle, X, Send, HeartPulse, MapPin, Camera, Mic, CheckCircle, Bot, RefreshCw } from 'lucide-react';
+import { Bell, Phone, X, Send, MapPin, Camera, Mic, CheckCircle, Bot, RefreshCw, Activity, Stethoscope, HeartPulse, Home, UserCircle, MessageCircle } from 'lucide-react';
 import { PredictionPage } from './pages/prediction';
 import { DetectionTrackerPage } from './pages/detection-tracker';
 import { QuickFirstAidPage } from './pages/quick-first-aid';
@@ -61,8 +61,8 @@ function SplashScreen() {
 }
 
 function ChatBot({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
-  const [messages, setMessages] = useState([
-    { text: "Namaste! 🙏 Main aapka Emergency Response AI Assistant hoon. Emergency situations mein help karne ke liye yahan hoon. Kya help chahiye aapko?", type: 'bot' }
+  const [messages, setMessages] = useState<{ text: string; type: 'user' | 'bot' }[]>([
+    { text: 'Namaste! 🙏 Main aapka Emergency Response AI Assistant hoon. Emergency situations mein help karne ke liye yahan hoon. Kya help chahiye aapko?', type: 'bot' }
   ]);
   const [input, setInput] = useState('');
   const [isListening, setIsListening] = useState(false);
@@ -72,96 +72,64 @@ function ChatBot({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) 
   useEffect(() => {
     if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      const recognition = new SpeechRecognition();
-      recognition.continuous = false;
-      recognition.interimResults = false;
-      recognitionRef.current = recognition;
-
-      recognition.onresult = (event: SpeechRecognitionEvent) => {
-        const transcript = event.results[0][0].transcript;
-        console.log('🎤 Speech recognized:', transcript);
-        setInput(transcript);
-        setIsListening(false);
-      };
-
-      recognition.onerror = (event) => {
-        console.error('🎤 Speech recognition error:', event);
-        setIsListening(false);
-        alert('Speech recognition error. Please try typing instead.');
-      };
-
-      recognition.onend = () => {
-        console.log('🎤 Speech recognition ended');
-        setIsListening(false);
-      };
-    }
-
-    return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.abort();
+      try {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = false;
+        recognitionRef.current = recognition;
+        recognition.onresult = (event: SpeechRecognitionEvent) => {
+          const transcript = event.results[0][0].transcript;
+            console.log('🎤 Speech recognized:', transcript);
+            setInput(transcript);
+            setIsListening(false);
+        };
+        recognition.onerror = (event) => {
+          console.error('🎤 Speech recognition error:', event);
+          setIsListening(false);
+        };
+        recognition.onend = () => setIsListening(false);
+      } catch (e) {
+        console.warn('Speech recognition init failed:', e);
       }
-    };
+    }
+    return () => recognitionRef.current?.abort();
   }, []);
 
   const toggleListening = () => {
-    if (!recognitionRef.current) {
-      alert('Speech recognition is not supported in your browser.');
+    const recognition = recognitionRef.current;
+    if (!recognition) {
+      alert('Speech recognition not supported in this browser.');
       return;
     }
-
     if (isListening) {
-      console.log('🎤 Stopping speech recognition...');
-      recognitionRef.current.stop();
+      recognition.stop();
     } else {
-      console.log('🎤 Starting speech recognition...');
       try {
-        recognitionRef.current.start();
+        recognition.start();
         setIsListening(true);
-      } catch (error) {
-        console.error('🎤 Error starting speech recognition:', error);
-        alert('Could not start speech recognition. Please try again.');
-        setIsListening(false);
+      } catch (e) {
+        console.error(e);
       }
     }
   };
 
   const clearChat = () => {
-    setMessages([{ 
-      text: "Namaste! 🙏 Main aapka Emergency Response AI Assistant hoon. Emergency situations mein help karne ke liye yahan hoon. Kya help chahiye aapko?", 
-      type: 'bot' 
-    }]);
-    geminiAI.clearHistory();
+    setMessages([{ text: 'Namaste! 🙏 Main aapka Emergency Response AI Assistant hoon. Emergency situations mein help karne ke liye yahan hoon. Kya help chahiye aapko?', type: 'bot' }]);
+    setInput('');
   };
 
-  const handleSend = async (customMessage?: string) => {
-    const messageToSend = customMessage || input.trim();
-    if (!messageToSend || isLoading) return;
-    
-    setMessages(prev => [...prev, { text: messageToSend, type: 'user' }]);
+  const handleSend = async (override?: string) => {
+    const content = (override ?? input).trim();
+    if (!content || isLoading) return;
+    setMessages(prev => [...prev, { text: content, type: 'user' }]);
     setInput('');
     setIsLoading(true);
-    
     try {
-      // Get AI response from Gemini
-      const aiResponse = await geminiAI.sendMessage(messageToSend);
-      setMessages(prev => [...prev, { text: aiResponse, type: 'bot' }]);
-    } catch (error) {
-      console.error('Error getting AI response:', error);
-      
-      // Provide helpful fallback responses for common emergency queries in Hinglish
-      let fallbackResponse = "Sorry yaar, AI connect nahi ho raha. Emergency ke liye ye numbers call kar:\n\n🚨 Emergency Numbers:\n• Police: 100\n• Fire: 101\n• Ambulance: 102\n• Women Helpline: 1091\n• Child Helpline: 1098";
-      
-      // Check if the message contains emergency keywords and provide basic guidance
-      const lowerMessage = messageToSend.toLowerCase();
-      if (lowerMessage.includes('bleeding') || lowerMessage.includes('blood') || lowerMessage.includes('khoon')) {
-        fallbackResponse = "Bleeding emergency mein:\n\n1. Clean cloth se pressure dal\n2. Area ko upar rakh\n3. Ambulance ko call kar (102)\n4. Help aane tak pressure rakhein\n\n🚨 Ambulance ke liye 102 call kar";
-      } else if (lowerMessage.includes('fire') || lowerMessage.includes('aag')) {
-        fallbackResponse = "Fire emergency:\n\n1. Turant bahar niklo\n2. Fire services ko call kar (101)\n3. Smoke se bachne ke liye neeche raho\n4. Elevator use mat karo\n5. Safe area mein milo\n\n🚨 Fire services ke liye 101 call kar";
-      } else if (lowerMessage.includes('heart') || lowerMessage.includes('chest pain') || lowerMessage.includes('dil')) {
-        fallbackResponse = "Heart attack ke symptoms:\n\n1. Ambulance ko turant call kar (102)\n\n2. Baith jao aur calm raho\n3. Aspirin available hai to le lo\n4. Tight clothes loose kar do\n5. Khud drive mat karo\n\n🚨 102 turant call kar - har minute important hai!";
-      }
-      
-      setMessages(prev => [...prev, { text: fallbackResponse, type: 'bot' }]);
+      const reply = await geminiAI.sendMessage(content);
+      setMessages(prev => [...prev, { text: reply, type: 'bot' }]);
+    } catch (e) {
+      console.error('AI send error', e);
+      setMessages(prev => [...prev, { text: 'Mujhe thoda issue aa raha hai. Kripya thodi der baad try karein. Emergency ho toh turant 100 / 101 / 102 par call karein.', type: 'bot' }]);
     } finally {
       setIsLoading(false);
     }
@@ -170,138 +138,81 @@ function ChatBot({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed bottom-20 right-4 w-80 h-96 bg-white rounded-xl shadow-2xl flex flex-col overflow-hidden z-50 max-w-[calc(100vw-2rem)]">
-      <div className="bg-red-500 p-4 flex justify-between items-center">
-        <div className="flex items-center gap-2">
-          <Bot className="w-5 h-5 text-white" />
-          <h3 className="text-white font-semibold">AI Emergency Assistant</h3>
-        </div>
-        <div className="flex items-center gap-2">
-          <button 
-            onClick={clearChat} 
-            className="text-white hover:text-red-100 p-1"
-            title="Clear chat"
-          >
-            <RefreshCw className="w-4 h-4" />
-          </button>
-          <button 
-            onClick={async () => {
-              const isConnected = await geminiAI.testConnection();
-              alert(isConnected ? '✅ AI Connection Test: SUCCESS' : '❌ AI Connection Test: FAILED - Check console for details');
-            }} 
-            className="text-white hover:text-red-100 p-1"
-            title="Test AI connection"
-          >
-            <Bot className="w-4 h-4" />
-          </button>
-          <button onClick={onClose} className="text-white hover:text-red-100">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-      </div>
-      
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map((msg, idx) => (
-          <div key={idx} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`max-w-[80%] rounded-lg p-3 ${
-              msg.type === 'user' ? 'bg-red-500 text-white' : 'bg-gray-100 text-gray-800'
-            }`}>
-              <div className="whitespace-pre-wrap text-sm">{msg.text}</div>
-            </div>
+    <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-end sm:items-center justify-center z-50">
+      <div className="w-full sm:max-w-md bg-white rounded-t-2xl sm:rounded-2xl shadow-lg flex flex-col h-[80vh] sm:h-[600px]">
+        <div className="p-4 border-b flex items-center justify-between">
+          <div className="flex items-center gap-2 font-semibold text-red-500"><Bot className="w-5 h-5" /> AI Assistant</div>
+          <div className="flex items-center gap-2">
+            <button onClick={clearChat} className="p-2 rounded-full hover:bg-gray-100" title="Clear chat">
+              <RefreshCw className="w-4 h-4 text-gray-500" />
+            </button>
+            <button onClick={onClose} className="p-2 rounded-full hover:bg-gray-100" title="Close">
+              <X className="w-5 h-5 text-gray-600" />
+            </button>
           </div>
-        ))}
-        {isLoading && (
-          <div className="flex justify-start">
-            <div className="bg-gray-100 text-gray-800 rounded-lg p-3">
-              <div className="flex items-center gap-2">
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-red-500"></div>
-                <span className="text-sm">AI is thinking...</span>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {messages.map((m, i) => (
+            <div key={i} className={`flex ${m.type === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div className={`max-w-[80%] rounded-lg p-3 text-sm whitespace-pre-wrap ${m.type === 'user' ? 'bg-red-500 text-white' : 'bg-gray-100 text-gray-800'}`}>{m.text}</div>
+            </div>
+          ))}
+          {isLoading && (
+            <div className="flex justify-start">
+              <div className="bg-gray-100 rounded-lg p-3 text-sm flex items-center gap-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-red-500" />
+                AI soch raha hai...
               </div>
             </div>
-          </div>
-        )}
-        
-        {/* Quick Action Buttons - Show only when no messages or first message */}
-        {messages.length <= 1 && !isLoading && (
-          <div className="space-y-2">
-            <p className="text-xs text-gray-500 text-center">Quick Actions:</p>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => handleSend("Bleeding ka first aid kya hai?")}
-                className="text-xs bg-red-50 text-red-600 p-2 rounded-lg hover:bg-red-100 transition-colors"
-              >
-                🩸 First Aid
-              </button>
-              <button
-                onClick={() => handleSend("Fire emergency mein kya karna chahiye?")}
-                className="text-xs bg-orange-50 text-orange-600 p-2 rounded-lg hover:bg-orange-100 transition-colors"
-              >
-                🔥 Fire Safety
-              </button>
-              <button
-                onClick={() => handleSend("India ke emergency numbers kya hain?")}
-                className="text-xs bg-blue-50 text-blue-600 p-2 rounded-lg hover:bg-blue-100 transition-colors"
-              >
-                📞 Emergency Numbers
-              </button>
-              <button
-                onClick={() => handleSend("Earthquake mein kaise safe rahein?")}
-                className="text-xs bg-yellow-50 text-yellow-600 p-2 rounded-lg hover:bg-yellow-100 transition-colors"
-              >
-                🌋 Earthquake Safety
-              </button>
+          )}
+          {messages.length <= 1 && !isLoading && (
+            <div className="space-y-2">
+              <p className="text-xs text-gray-500 text-center">Quick Actions</p>
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => handleSend('Bleeding ka first aid kya hai?')} className="text-xs bg-red-50 text-red-600 p-2 rounded-lg hover:bg-red-100">🩸 First Aid</button>
+                <button onClick={() => handleSend('Fire emergency mein kya karna chahiye?')} className="text-xs bg-orange-50 text-orange-600 p-2 rounded-lg hover:bg-orange-100">🔥 Fire Safety</button>
+                <button onClick={() => handleSend('India ke emergency numbers kya hain?')} className="text-xs bg-blue-50 text-blue-600 p-2 rounded-lg hover:bg-blue-100">📞 Emergency Numbers</button>
+                <button onClick={() => handleSend('Earthquake mein kaise safe rahein?')} className="text-xs bg-yellow-50 text-yellow-600 p-2 rounded-lg hover:bg-yellow-100">🌋 Earthquake Safety</button>
+              </div>
+              <div className="text-center mt-3 p-2 bg-blue-50 rounded-lg">
+                <p className="text-xs text-blue-600 font-medium">🎤 Voice Commands</p>
+                <p className="text-xs text-blue-500">Mic dabayein & Hindi/English bolen</p>
+              </div>
             </div>
-            
-            {/* Voice Instructions */}
-            <div className="text-center mt-3 p-2 bg-blue-50 rounded-lg">
-              <p className="text-xs text-blue-600 font-medium">🎤 Voice Commands</p>
-              <p className="text-xs text-blue-500">Click microphone button and speak in Hindi/English</p>
-            </div>
-          </div>
-        )}
-      </div>
-      
-      <div className="border-t p-4 flex gap-2">
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyPress={(e) => e.key === 'Enter' && !isLoading && handleSend()}
-          placeholder={isLoading ? "AI is responding..." : "Type your message..."}
-          disabled={isLoading}
-          className="flex-1 border rounded-full px-4 py-2 focus:outline-none focus:border-red-500 disabled:bg-gray-50 disabled:text-gray-500"
-        />
-        <button
-          onClick={toggleListening}
-          disabled={isLoading}
-          className={`p-2 rounded-full ${
-            isListening 
-              ? 'bg-red-500 text-white animate-pulse' 
-              : isLoading
-              ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-          }`}
-          title={isListening ? "Listening... Click to stop" : "Click to speak"}
-        >
-          <Mic className={`w-5 h-5 ${isListening ? 'animate-pulse' : ''}`} />
-        </button>
-        <button
-          onClick={handleSend}
-          disabled={isLoading || !input.trim()}
-          className={`rounded-full p-2 ${
-            isLoading || !input.trim()
-              ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-              : 'bg-red-500 text-white hover:bg-red-600'
-          }`}
-        >
-          <Send className="w-5 h-5" />
-        </button>
+          )}
+        </div>
+        <div className="border-t p-4 flex gap-2">
+          <input
+            type="text"
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleSend()}
+            placeholder={isLoading ? 'AI is responding...' : 'Type your message...'}
+            disabled={isLoading}
+            className="flex-1 border rounded-full px-4 py-2 focus:outline-none focus:border-red-500 disabled:bg-gray-50"
+          />
+          <button
+            onClick={toggleListening}
+            disabled={isLoading}
+            className={`p-2 rounded-full ${isListening ? 'bg-red-500 text-white animate-pulse' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'} ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+            title={isListening ? 'Listening... click to stop' : 'Speak'}
+          >
+            <Mic className="w-5 h-5" />
+          </button>
+          <button
+            onClick={() => handleSend()}
+            disabled={isLoading || !input.trim()}
+            className={`p-2 rounded-full ${isLoading || !input.trim() ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-red-500 text-white hover:bg-red-600'}`}
+          >
+            <Send className="w-5 h-5" />
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
-function EmergencyReport() {
+function EmergencyReport({ onToggleSOS, sosPlaying }: { onToggleSOS: () => void; sosPlaying: boolean }) {
   const { user } = useAuth();
   const [selectedType, setSelectedType] = useState('');
   const [selectedOption, setSelectedOption] = useState('');
@@ -311,6 +222,7 @@ function EmergencyReport() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitSuccess, setSubmitSuccess] = useState(false);
   const [showLocationInput, setShowLocationInput] = useState(false);
+  const [volunteer, setVolunteer] = useState(false);
 
   const emergencyTypes = [
     { 
@@ -471,6 +383,7 @@ function EmergencyReport() {
 
     setIsSubmitting(true);
     try {
+      console.log('[UI] Submitting emergency report...');
       await submitEmergencyReport({
         userId: user.uid,
         userName: user.displayName || user.email?.split('@')[0] || 'Anonymous',
@@ -493,9 +406,9 @@ function EmergencyReport() {
       
       // Reset success state after 3 seconds
       setTimeout(() => setSubmitSuccess(false), 3000);
-    } catch (error) {
-      console.error('Error submitting emergency report:', error);
-      alert('Failed to submit emergency report. Please try again.');
+    } catch (error: any) {
+      console.error('[UI] Error submitting emergency report:', error);
+      alert('Failed to submit emergency report: ' + (error?.message || 'Unknown error'));
     } finally {
       setIsSubmitting(false);
     }
@@ -503,7 +416,47 @@ function EmergencyReport() {
 
   return (
     <div className="bg-gray-50 p-4 sm:p-6 rounded-t-3xl -mt-6 min-h-screen">
-      <div className="max-w-md mx-auto">
+      <div className="max-w-2xl mx-auto">
+        {/* Page Title (global greeting moved to header) */}
+        <div className="text-left mb-4">
+          <h1 className="text-2xl font-bold">Emergency Help</h1>
+        </div>
+
+        {/* SOS Section */}
+        <div className="flex flex-col items-center mb-10 mt-4">
+          <p className="text-sm text-gray-600 text-center mb-2">Help is just a click away!</p>
+          <p className="text-sm text-gray-600 text-center mb-6">
+            Click <span className="text-red-600 font-medium">{sosPlaying ? 'STOP' : 'SOS'} button</span> to {sosPlaying ? 'stop alert' : 'call for help'}.
+          </p>
+          <div className="relative flex items-center justify-center">
+            {/* Pulsing background */}
+            <div className={`absolute w-72 h-72 rounded-full bg-red-100/60 animate-ping ${sosPlaying ? 'animation-duration-1000' : ''}`}></div>
+            <div className={`absolute w-56 h-56 rounded-full bg-red-100/80 ${sosPlaying ? 'animate-pulse' : ''}`}></div>
+            <button
+              onClick={onToggleSOS}
+              aria-pressed={sosPlaying}
+              className={`relative w-64 h-64 rounded-full shadow-xl flex items-center justify-center text-2xl font-bold tracking-wide transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-red-300 select-none ${
+                sosPlaying 
+                  ? 'bg-gradient-to-br from-red-700 to-red-500 text-white scale-105' 
+                  : 'bg-gradient-to-br from-red-500 to-red-600 text-white hover:scale-105'
+              }`}
+            >
+              {sosPlaying ? 'STOP' : 'SOS'}
+            </button>
+          </div>
+          {/* Volunteer toggle */}
+          <div className="mt-6 flex items-center gap-4 bg-white rounded-full px-4 py-2 shadow-sm border">
+            <span className="text-sm font-medium text-gray-700">Volunteer for help</span>
+            <button
+              onClick={() => setVolunteer(v => !v)}
+              role="switch"
+              aria-checked={volunteer}
+              className={`w-12 h-6 rounded-full p-1 flex items-center transition-colors ${volunteer ? 'bg-red-500 justify-end' : 'bg-gray-300 justify-start'}`}
+            >
+              <span className={`w-4 h-4 rounded-full bg-white shadow transition-transform ${volunteer ? 'translate-x-0' : 'translate-x-0'}`}></span>
+            </button>
+          </div>
+        </div>
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-semibold">Select Emergency Type</h2>
           {selectedType && (
@@ -558,85 +511,69 @@ function EmergencyReport() {
                 ))}
               </div>
             </div>
+            {showLocationInput ? (
+              <div className="space-y-3">
+                <input
+                  type="text"
+                  value={location}
+                  onChange={(e) => setLocation(e.target.value)}
+                  placeholder="Enter emergency location..."
+                  className="w-full p-3 border border-gray-200 rounded-lg focus:outline-none focus:border-red-500"
+                  autoFocus
+                />
 
-            {selectedOption && (
-              <div className="p-3 border border-red-500 rounded-lg">
-                <p className="text-gray-700 font-medium">Selected: {selectedOption}</p>
-                <p className="text-sm text-gray-500 mt-1">Please provide additional details below</p>
-              </div>
-            )}
-
-            <div className="space-y-2">
-              <label className="text-lg font-semibold">Location</label>
-              {showLocationInput ? (
-                <div className="space-y-3">
-                  <input
-                    type="text"
-                    value={location}
-                    onChange={(e) => setLocation(e.target.value)}
-                    placeholder="Enter emergency location..."
-                    className="w-full p-3 border border-gray-200 rounded-lg focus:outline-none focus:border-red-500"
-                    autoFocus
-                  />
-                  
-                  {/* Quick Location Presets */}
-                  <div className="space-y-2">
-                    <p className="text-sm text-gray-600 font-medium">Quick Locations:</p>
-                    <div className="grid grid-cols-2 gap-2">
-                      {quickLocations.map((loc, index) => (
-                        <button
-                          key={index}
-                          onClick={() => setLocation(loc)}
-                          className={`p-2 text-xs rounded-lg border transition-colors ${
-                            location === loc
-                              ? 'bg-red-50 border-red-300 text-red-700'
-                              : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
-                          }`}
-                        >
-                          {loc.split(',')[0]}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => handleLocationChange(location)}
-                      className="flex-1 bg-red-500 text-white py-2 rounded-lg text-sm font-medium hover:bg-red-600 transition-colors"
-                    >
-                      Save Location
-                    </button>
-                    <button
-                      onClick={() => {
-                        setShowLocationInput(false);
-                        setLocation('Park Street, Kolkata, 700016'); // Reset to default
-                      }}
-                      className="flex-1 bg-gray-300 text-gray-700 py-2 rounded-lg text-sm font-medium hover:bg-gray-400 transition-colors"
-                    >
-                      Cancel
-                    </button>
+                <div className="space-y-2">
+                  <p className="text-sm text-gray-600 font-medium">Quick Locations:</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {quickLocations.map((loc, index) => (
+                      <button
+                        key={index}
+                        onClick={() => setLocation(loc)}
+                        className={`p-2 text-xs rounded-lg border transition-colors ${
+                          location === loc ? 'bg-red-50 border-red-300 text-red-700' : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
+                        }`}
+                      >
+                        {loc.split(',')[0]}
+                      </button>
+                    ))}
                   </div>
                 </div>
-              ) : (
-                <div className="flex items-center justify-between bg-white p-3 rounded-lg shadow-sm">
-                  <div className="flex items-center gap-2 text-sm">
-                    <MapPin className="text-gray-400 w-4 h-4 flex-shrink-0" />
-                    <span className="truncate">{location}</span>
-                    {location !== 'Park Street, Kolkata, 700016' && (
-                      <span className="text-xs bg-blue-100 text-blue-600 px-2 py-1 rounded-full">
-                        Custom
-                      </span>
-                    )}
-                  </div>
-                  <button 
-                    onClick={() => setShowLocationInput(true)}
-                    className="text-red-500 text-sm font-medium ml-2 flex-shrink-0 hover:text-red-600"
+
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleLocationChange(location)}
+                    className="flex-1 bg-red-500 text-white py-2 rounded-lg text-sm font-medium hover:bg-red-600 transition-colors"
                   >
-                    Change
+                    Save Location
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowLocationInput(false)
+                      setLocation('Park Street, Kolkata, 700016')
+                    }}
+                    className="flex-1 bg-gray-300 text-gray-700 py-2 rounded-lg text-sm font-medium hover:bg-gray-400 transition-colors"
+                  >
+                    Cancel
                   </button>
                 </div>
-              )}
-            </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between bg-white p-3 rounded-lg shadow-sm">
+                <div className="flex items-center gap-2 text-sm">
+                  <MapPin className="text-gray-400 w-4 h-4 flex-shrink-0" />
+                  <span className="truncate">{location}</span>
+                  {location !== 'Park Street, Kolkata, 700016' && (
+                    <span className="text-xs bg-blue-100 text-blue-600 px-2 py-1 rounded-full">Custom</span>
+                  )}
+                </div>
+                <button
+                  onClick={() => setShowLocationInput(true)}
+                  className="text-red-500 text-sm font-medium ml-2 flex-shrink-0 hover:text-red-600"
+                >
+                  Change
+                </button>
+              </div>
+            )}
 
             <div className="space-y-2">
               <label className="text-lg font-semibold">Attach proof</label>
@@ -718,32 +655,46 @@ function MainApp() {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [currentPage, setCurrentPage] = useState('home');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
   const [hasWelcomed, setHasWelcomed] = useState(false);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
-  const [previousNotificationCount, setPreviousNotificationCount] = useState(0);
-  const [lastNotificationIds, setLastNotificationIds] = useState<string[]>([]);
-
-  useEffect(() => {
-    // Create audio element for emergency sound
-    audioRef.current = new Audio(emergencySiren);
-    audioRef.current.loop = true;
-  }, []);
+  // Keep refs to avoid effect resubscriptions
+  const previousNotificationCountRef = useRef(0);
+  const lastNotificationIdsRef = useRef<string[]>([]);
+  // Track if we've processed the very first snapshot to avoid playing sound for pre-existing notifications
+  const firstNotificationSnapshotRef = useRef(true);
+  // Ensure audio element is ready (some mobile browsers need it in DOM first)
+  const ensureAudio = () => {
+    if (!audioRef.current) {
+      const el = new Audio(emergencySiren);
+      el.loop = true;
+      el.preload = 'auto';
+      audioRef.current = el;
+    }
+  };
 
   const handleSOSClick = () => {
-    if (!audioRef.current) return;
-
+    ensureAudio();
+    const audio = audioRef.current;
+    if (!audio) return;
     if (!isPlaying) {
-      audioRef.current.play();
-      setIsPlaying(true);
+      audio.play().then(() => setIsPlaying(true)).catch(err => {
+        console.error('Play blocked', err);
+        alert('Tap again to enable sound.');
+      });
     } else {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
+      audio.pause();
+      audio.currentTime = 0;
       setIsPlaying(false);
     }
   };
+
+  // MongoDB connection removed - MongoDB cannot run in browser
+  // You need a backend server to use MongoDB
+
+  // Removed unused handleSOSClick (siren controls not currently exposed in UI)
 
   // React to Firebase auth state changes (email/password or Google)
   useEffect(() => {
@@ -776,55 +727,41 @@ function MainApp() {
     }
   };
 
+  // (Old Firebase listener removed; implementing Supabase unread notifications listener below.)
+
+  // Unread notifications listener (Supabase)
   useEffect(() => {
     if (!user) {
       setUnreadNotifications(0);
-      setPreviousNotificationCount(0);
-      setLastNotificationIds([]);
+      previousNotificationCountRef.current = 0;
+      lastNotificationIdsRef.current = [];
       return;
     }
-
-    const notificationsRef = collection(db, 'notifications');
-    const q = query(
-      notificationsRef,
-      where('userId', '==', user.uid),
-      where('read', '==', false)
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot: any) => {
-      const newCount = snapshot.size;
-      const newNotificationIds: string[] = [];
-      
-      // Collect all notification IDs
-      snapshot.forEach((doc: any) => {
-        newNotificationIds.push(doc.id);
-      });
-      
-      setUnreadNotifications(newCount);
-      
-      // Check if there are new notifications (not just count change)
-      const hasNewNotifications = newNotificationIds.some(id => !lastNotificationIds.includes(id));
-      
-      console.log('📱 Notification update:', {
-        newCount,
-        previousCount: previousNotificationCount,
-        newIds: newNotificationIds,
-        lastIds: lastNotificationIds,
-        hasNewNotifications,
-        shouldPlaySound: hasNewNotifications && lastNotificationIds.length > 0
-      });
-      
-      // Play sound if new notifications arrived (but not on initial load)
-      if (hasNewNotifications && lastNotificationIds.length > 0) {
+    const loadUnread = async () => {
+      const { data, error } = await supabase
+        .from(TABLES.NOTIFICATIONS)
+        .select('id')
+        .eq('user_id', user.uid)
+        .eq('is_read', false);
+      if (error) { console.error('Unread notifications fetch error', error); return; }
+      const ids = (data || []).map(d => d.id as string);
+      const count = ids.length;
+      const hasNew = ids.some(id => !lastNotificationIdsRef.current.includes(id));
+      const isFirst = firstNotificationSnapshotRef.current;
+      if (!isFirst && (hasNew || previousNotificationCountRef.current !== count)) {
         playNotificationSound();
       }
-      
-      setPreviousNotificationCount(newCount);
-      setLastNotificationIds(newNotificationIds);
-    });
-
-    return () => unsubscribe();
-  }, [user, previousNotificationCount, lastNotificationIds]);
+      if (isFirst) firstNotificationSnapshotRef.current = false;
+      setUnreadNotifications(count);
+      lastNotificationIdsRef.current = ids;
+      previousNotificationCountRef.current = count;
+    };
+    loadUnread();
+    const channel = supabase.channel('unread_notifications_' + user.uid)
+      .on('postgres_changes', { event: '*', schema: 'public', table: TABLES.NOTIFICATIONS, filter: `user_id=eq.${user.uid}` }, () => loadUnread())
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [user]);
 
   const handleLogin = async (email: string, password: string) => {
     try {
@@ -877,135 +814,69 @@ function MainApp() {
 
   // Removed the authentication check here to allow direct access to home page
   const renderPage = () => {
-    // Show login/signup pages only when explicitly navigating to them
     if (!isAuthenticated && (currentPage === 'login' || currentPage === 'signup')) {
-      if (currentPage === 'login') {
-        return (
-          <LoginPage 
-            onLogin={handleLogin} 
-            onSwitchToSignup={() => setCurrentPage('signup')}
-            onForgotPassword={async (email) => {
-              try {
-                await resetPassword(email);
-                alert('Password reset email sent. Please check your inbox.');
-              } catch (e) {
-                console.error(e);
-                alert('Failed to send reset email. Please try again.');
-              }
-            }} 
-          />
-        );
-      } else {
-        return (
-          <SignupPage 
-            onSignup={handleSignup} 
-            onSwitchToLogin={() => setCurrentPage('login')} 
-          />
-        );
-      }
+      return currentPage === 'login' ? (
+        <LoginPage
+          onLogin={handleLogin}
+          onSwitchToSignup={() => setCurrentPage('signup')}
+          onForgotPassword={async (email) => {
+            try { await resetPassword(email); alert('Password reset email sent.'); }
+            catch { alert('Failed to send reset email.'); }
+          }}
+        />
+      ) : (
+        <SignupPage onSignup={handleSignup} onSwitchToLogin={() => setCurrentPage('login')} />
+      );
     }
-
     switch (currentPage) {
-      case 'prediction':
-        return <PredictionPage />;
-      case 'detection':
-        return <DetectionTrackerPage />;
-      case 'firstaid':
-        return <QuickFirstAidPage onOpen={(key) => {
-          if (key === 'call') setCurrentPage('call');
-          if (key === 'video') setCurrentPage('video');
-          if (key === 'manual') setCurrentPage('manual');
-          if (key === 'tips') setCurrentPage('tips');
-        }} />;
-      case 'call':
-        return <CallEmergencyPage onBack={() => setCurrentPage('firstaid')} />
-      case 'video':
-        return <VideoGuidePage onBack={() => setCurrentPage('firstaid')} />
-      case 'manual':
-        return <ManualPage onBack={() => setCurrentPage('firstaid')} />
-      case 'tips':
-        return <TipsPage onBack={() => setCurrentPage('firstaid')} />
-      case 'profile':
-        return isAuthenticated ? (
-          <ProfilePage onLogout={handleLogout} onOpenFriends={() => setCurrentPage('friends')} />
-        ) : (
-          <LoginPage 
-            onLogin={handleLogin} 
-            onSwitchToSignup={() => setCurrentPage('signup')} 
-          />
-        );
-      case 'friends':
-        return <FriendsPage onBack={() => setCurrentPage('profile')} />
-      case 'notifications':
-        return <NotificationsPage onBack={() => setCurrentPage('home')} />
-      default:
-        return (
-          <div className="flex flex-col min-h-screen">
-            <div className="p-4 flex justify-between items-center">
-              <div>
-                <p className="text-gray-500 text-sm">Hey, {isAuthenticated ? `${user?.displayName || (user?.email ? user.email.split('@')[0] : 'User')}!` : 'Guest!'}</p>
-                <h1 className="text-xl font-bold">Emergency Help</h1>
-              </div>
-              {!isAuthenticated && (
-                <button 
-                  onClick={() => setCurrentPage('login')}
-                  className="text-red-500 font-medium text-sm"
-                >
-                  Login
-                </button>
-              )}
-              {isAuthenticated && (
-                <button
-                  onClick={() => setCurrentPage('notifications')}
-                  className="relative p-2 hover:bg-gray-100 rounded-full transition-colors"
-                >
-                  <Bell className="w-5 h-5 text-red-500" />
-                  {unreadNotifications > 0 && (
-                    <div className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-medium">
-                      {unreadNotifications > 9 ? '9+' : unreadNotifications}
-                    </div>
-                  )}
-                </button>
-              )}
-            </div>
-
-            <div className="px-4 py-6 flex flex-col items-center">
-              <p className="text-gray-600 text-center text-sm mb-2">
-                Help is just a click away!
-              </p>
-              <p className="text-gray-600 text-center text-sm mb-6">
-                Click <span className="text-red-500 font-semibold">SOS button</span> to call for help.
-              </p>
-
-              <button 
-                onClick={handleSOSClick}
-                className={`w-32 h-32 sm:w-48 sm:h-48 rounded-full ${
-                  isPlaying ? 'bg-red-600' : 'bg-red-500'
-                } text-white font-bold text-xl shadow-lg hover:bg-red-600 transition-all duration-300 relative`}
-              >
-                <div className="absolute inset-0 bg-red-500 rounded-full animate-ping opacity-75"></div>
-                <span className="relative z-10">{isPlaying ? 'STOP' : 'SOS'}</span>
-              </button>
-
-              <div className="mt-8 w-full max-w-sm p-3 bg-gray-50 rounded-xl">
-                <div className="flex items-center justify-between">
-                  <span className="text-gray-700 text-sm">Volunteer for help</span>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" className="sr-only peer" />
-                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-red-300 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-red-500"></div>
-                  </label>
-                </div>
-              </div>
-            </div>
-
-            <EmergencyReport />
-          </div>
-        );
+      case 'prediction': return <PredictionPage />;
+      case 'detection': return <DetectionTrackerPage />;
+      case 'firstaid': return <QuickFirstAidPage onOpen={(key) => setCurrentPage(key)} />;
+      case 'call': return <CallEmergencyPage onBack={() => setCurrentPage('firstaid')} />;
+      case 'video': return <VideoGuidePage onBack={() => setCurrentPage('firstaid')} />;
+      case 'manual': return <ManualPage onBack={() => setCurrentPage('firstaid')} />;
+      case 'tips': return <TipsPage onBack={() => setCurrentPage('firstaid')} />;
+  case 'profile': return <ProfilePage onLogout={handleLogout} onOpenFriends={() => setCurrentPage('friends')} />;
+  case 'friends': return <FriendsPage onBack={() => setCurrentPage('profile')} />;
+  case 'notifications': return (
+    <NotificationsPage
+      onBack={() => setCurrentPage('home')}
+      onUnreadDelta={(delta) => setUnreadNotifications(prev => Math.max(0, prev + delta))}
+    />
+  );
+  default: return <EmergencyReport onToggleSOS={handleSOSClick} sosPlaying={isPlaying} />;
     }
   };
 
   return (
     <div className="min-h-screen bg-white overflow-x-hidden">
+      {/* Hidden/inline audio element improves reliability on iOS & some Android browsers */}
+      <audio
+        ref={audioRef}
+        src={emergencySiren}
+        loop
+        preload="auto"
+        // style hidden but keep in DOM
+        className="hidden"
+      />
+      {/* Top: greeting left, notifications right (hidden on Profile page) */}
+      {currentPage !== 'profile' && (
+        <div className="px-4 pt-3 flex items-center justify-between">
+          <div className="text-sm text-gray-700">Hey, {user ? (user.displayName || (user.email ? user.email.split('@')[0] : 'User')) : 'Guest'}!</div>
+          <div>
+            {isAuthenticated ? (
+              <button onClick={() => setCurrentPage('notifications')} className="relative p-2 rounded-full hover:bg-gray-100" aria-label="Notifications">
+                <Bell className="w-5 h-5 text-gray-700" />
+                {unreadNotifications > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] leading-none px-1.5 py-0.5 rounded-full">{unreadNotifications}</span>
+                )}
+              </button>
+            ) : (
+              <button onClick={() => setCurrentPage('login')} className="text-red-500 text-sm font-medium">Login</button>
+            )}
+          </div>
+        </div>
+      )}
       {renderPage()}
 
       {/* Chatbot Button */}
