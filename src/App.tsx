@@ -23,7 +23,7 @@ interface SpeechRecognitionInstance extends EventTarget {
   stop(): void;
   abort(): void;
   onresult: (event: SpeechRecognitionEvent) => void;
-  onerror: (event: any) => void; // broaden to capture event details
+  onerror: (event: Event) => void; // broaden to capture event details
   onend: () => void;
 }
 
@@ -406,9 +406,10 @@ function EmergencyReport({ onToggleSOS, sosPlaying }: { onToggleSOS: () => void;
       
       // Reset success state after 3 seconds
       setTimeout(() => setSubmitSuccess(false), 3000);
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('[UI] Error submitting emergency report:', error);
-      alert('Failed to submit emergency report: ' + (error?.message || 'Unknown error'));
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      alert('Failed to submit emergency report: ' + errorMessage);
     } finally {
       setIsSubmitting(false);
     }
@@ -434,12 +435,13 @@ function EmergencyReport({ onToggleSOS, sosPlaying }: { onToggleSOS: () => void;
             <div className={`absolute w-56 h-56 rounded-full bg-red-100/80 ${sosPlaying ? 'animate-pulse' : ''}`}></div>
             <button
               onClick={onToggleSOS}
-              aria-pressed={sosPlaying}
+              aria-pressed={sosPlaying ? 'true' : 'false'}
               className={`relative w-64 h-64 rounded-full shadow-xl flex items-center justify-center text-2xl font-bold tracking-wide transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-red-300 select-none ${
                 sosPlaying 
                   ? 'bg-gradient-to-br from-red-700 to-red-500 text-white scale-105' 
                   : 'bg-gradient-to-br from-red-500 to-red-600 text-white hover:scale-105'
               }`}
+              title={sosPlaying ? 'Stop SOS Alert' : 'Send SOS Alert'}
             >
               {sosPlaying ? 'STOP' : 'SOS'}
             </button>
@@ -450,8 +452,9 @@ function EmergencyReport({ onToggleSOS, sosPlaying }: { onToggleSOS: () => void;
             <button
               onClick={() => setVolunteer(v => !v)}
               role="switch"
-              aria-checked={volunteer}
+              aria-checked={volunteer ? 'true' : 'false'}
               className={`w-12 h-6 rounded-full p-1 flex items-center transition-colors ${volunteer ? 'bg-red-500 justify-end' : 'bg-gray-300 justify-start'}`}
+              title={volunteer ? 'Volunteer mode is ON' : 'Volunteer mode is OFF'}
             >
               <span className={`w-4 h-4 rounded-full bg-white shadow transition-transform ${volunteer ? 'translate-x-0' : 'translate-x-0'}`}></span>
             </button>
@@ -466,6 +469,7 @@ function EmergencyReport({ onToggleSOS, sosPlaying }: { onToggleSOS: () => void;
                 setSelectedOption('');
               }}
               className="text-gray-400 hover:text-gray-600 p-1"
+              title="Clear selection"
             >
               <X className="w-5 h-5" />
             </button>
@@ -836,15 +840,19 @@ function MainApp() {
       case 'video': return <VideoGuidePage onBack={() => setCurrentPage('firstaid')} />;
       case 'manual': return <ManualPage onBack={() => setCurrentPage('firstaid')} />;
       case 'tips': return <TipsPage onBack={() => setCurrentPage('firstaid')} />;
-  case 'profile': return <ProfilePage onLogout={handleLogout} onOpenFriends={() => setCurrentPage('friends')} />;
-  case 'friends': return <FriendsPage onBack={() => setCurrentPage('profile')} />;
-  case 'notifications': return (
-    <NotificationsPage
-      onBack={() => setCurrentPage('home')}
-      onUnreadDelta={(delta) => setUnreadNotifications(prev => Math.max(0, prev + delta))}
-    />
-  );
-  default: return <EmergencyReport onToggleSOS={handleSOSClick} sosPlaying={isPlaying} />;
+      case 'profile': 
+        return <ProfilePage onLogout={handleLogout} onOpenFriends={() => setCurrentPage('friends')} />;
+      case 'friends': 
+        return <FriendsPage onBack={() => setCurrentPage('profile')} />;
+      case 'notifications': 
+        return (
+          <NotificationsPage
+            onBack={() => setCurrentPage('home')}
+            onUnreadDelta={(delta) => setUnreadNotifications(prev => Math.max(0, prev + delta))}
+          />
+        );
+      default: 
+        return <EmergencyReport onToggleSOS={handleSOSClick} sosPlaying={isPlaying} />;
     }
   };
 
@@ -892,41 +900,46 @@ function MainApp() {
       {/* Bottom Navigation */}
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 p-3">
         <div className="flex justify-around items-center">
-          <div 
+          <button 
             className={`flex flex-col items-center ${currentPage === 'prediction' ? 'text-red-500' : 'text-gray-400'} transition-colors duration-200`}
             onClick={() => setCurrentPage('prediction')}
+            title="Go to Prediction page"
           >
             <HeartPulse className="w-5 h-5 cursor-pointer" />
             <span className="text-[10px] mt-1">Prediction</span>
-          </div>
-          <div 
+          </button>
+          <button 
             className={`flex flex-col items-center ${currentPage === 'firstaid' ? 'text-red-500' : 'text-gray-400'} transition-colors duration-200`}
             onClick={() => setCurrentPage('firstaid')}
+            title="Go to Quick First Aid page"
           >
             <Stethoscope className="w-5 h-5 cursor-pointer" />
             <span className="text-[10px] mt-1">Quick First Aid</span>
-          </div>
-          <div 
+          </button>
+          <button 
             className={`flex flex-col items-center ${currentPage === 'home' ? 'text-red-500' : 'text-gray-400'} transition-colors duration-200`}
             onClick={() => setCurrentPage('home')}
+            title="Go to Home page"
           >
             <Home className="w-5 h-5 cursor-pointer" />
             <span className="text-[10px] mt-1">Home</span>
-          </div>
-          <div 
+          </button>
+          <button 
             className={`flex flex-col items-center ${currentPage === 'detection' ? 'text-red-500' : 'text-gray-400'} transition-colors duration-200`}
             onClick={() => setCurrentPage('detection')}
+            title="Go to Detection Tracker page"
           >
             <Activity className="w-5 h-5 cursor-pointer" />
             <span className="text-[10px] mt-1">Detection Tracker</span>
-          </div>
-          <div 
+          </button>
+          <button 
             className={`flex flex-col items-center ${currentPage === 'profile' ? 'text-red-500' : 'text-gray-400'} transition-colors duration-200`}
             onClick={() => setCurrentPage(isAuthenticated ? 'profile' : 'login')}
+            title="Go to Profile page"
           >
             <UserCircle className="w-5 h-5 cursor-pointer" />
             <span className="text-[10px] mt-1">Profile</span>
-          </div>
+          </button>
         </div>
       </div>
     </div>
