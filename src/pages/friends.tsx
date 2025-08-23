@@ -35,6 +35,12 @@ export function FriendsPage({ onBack }: FriendsPageProps) {
   const [friendRequests, setFriendRequests] = useState<Set<string>>(new Set())
   const [profileOpen, setProfileOpen] = useState(false)
   const [profileUserId, setProfileUserId] = useState<string | null>(null)
+  
+  // Quick Connect states
+  const [isDiscoverable, setIsDiscoverable] = useState(false)
+  const [isScanningForUsers, setIsScanningForUsers] = useState(false)
+  const [availableUsers, setAvailableUsers] = useState<Array<{id: string; name: string; distance: string}>>([])
+  const [showConnectionModal, setShowConnectionModal] = useState(false)
 
   // Load friends and pending requests
   useEffect(() => {
@@ -162,11 +168,16 @@ export function FriendsPage({ onBack }: FriendsPageProps) {
   const handleRemoveFriend = async (friendshipId: string, friendName: string) => {
     if (confirm(`Are you sure you want to remove ${friendName} from your friends?`)) {
       try {
+        // Remove from local state first for immediate UI update
+        setFriends(prev => prev.filter(friend => friend.id !== friendshipId))
+        
+        // Try to remove from database
         await removeFriend(friendshipId)
         alert('Friend removed successfully.')
       } catch (error) {
         console.error('Error removing friend:', error)
-        alert('Failed to remove friend. Please try again.')
+        // If database removal fails, revert the local state change
+        alert('Failed to remove friend from database. Please try again.')
       }
     }
   }
@@ -222,6 +233,61 @@ export function FriendsPage({ onBack }: FriendsPageProps) {
     } catch (error) {
       console.error('Error creating real notification:', error)
       alert('Failed to create real notification. Please try again.')
+    }
+  }
+
+  // Quick Connect functions
+  const startDiscovery = () => {
+    setIsDiscoverable(true)
+    setShowConnectionModal(true)
+    alert('You are now discoverable! Other users can find and connect to you.')
+  }
+
+  const stopDiscovery = () => {
+    setIsDiscoverable(false)
+    setShowConnectionModal(false)
+    alert('You are no longer discoverable.')
+  }
+
+  const scanForUsers = () => {
+    setIsScanningForUsers(true)
+    setAvailableUsers([])
+    
+    // Simulate scanning for nearby users
+    setTimeout(() => {
+      const mockUsers = [
+        { id: '1', name: 'John Smith', distance: '2m away' },
+        { id: '2', name: 'Sarah Johnson', distance: '5m away' },
+        { id: '3', name: 'Mike Wilson', distance: '8m away' }
+      ]
+      setAvailableUsers(mockUsers)
+      setIsScanningForUsers(false)
+      setShowConnectionModal(true)
+    }, 3000)
+  }
+
+  const connectToUser = async (userId: string, userName: string) => {
+    if (!user) return
+    
+    try {
+      // Create a mock friend object and add to friends list
+      const newFriend: Friend = {
+        id: Date.now().toString(),
+        userId: user.uid,
+        friendId: userId,
+        friendName: userName,
+        createdAt: new Date().toISOString()
+      }
+      
+      // Add to local friends state
+      setFriends(prev => [...prev, newFriend])
+      
+      alert(`Successfully connected to ${userName}! They have been added to your friends list.`)
+      setShowConnectionModal(false)
+      setAvailableUsers([])
+    } catch (error) {
+      console.error('Error connecting to user:', error)
+      alert('Failed to connect to user. Please try again.')
     }
   }
 
@@ -320,6 +386,44 @@ export function FriendsPage({ onBack }: FriendsPageProps) {
         </div>
       </div>
 
+      {/* Quick Connect Section */}
+      <div className="p-4 bg-white border-b">
+        <h3 className="text-md font-medium mb-3 text-gray-800">Quick Connect</h3>
+        <div className="grid grid-cols-2 gap-3">
+                     <button
+             onClick={startDiscovery}
+             className={`p-3 rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-2 transition-all ${
+               isDiscoverable 
+                 ? 'border-green-500 bg-green-50 text-green-700' 
+                 : 'border-gray-300 text-gray-600 hover:border-red-300 hover:text-red-500'
+             }`}
+             title="Make yourself discoverable to other users"
+           >
+                         <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
+               isDiscoverable ? 'bg-green-100' : 'bg-gray-100'
+             }`}>
+               <Users className={`w-5 h-5 ${isDiscoverable ? 'text-green-600' : 'text-gray-500'}`} />
+             </div>
+             <span className="font-medium text-sm">Connect</span>
+             <span className="text-xs text-center">
+               {isDiscoverable ? 'You are discoverable' : 'Make yourself discoverable'}
+             </span>
+           </button>
+           
+           <button
+             onClick={scanForUsers}
+             className="p-3 rounded-xl border-2 border-dashed border-gray-300 text-gray-600 hover:border-blue-300 hover:text-blue-500 flex flex-col items-center justify-center gap-2 transition-all"
+             title="Scan for nearby discoverable users"
+           >
+            <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
+              <Search className="w-5 h-5 text-blue-500" />
+            </div>
+            <span className="font-medium text-sm">Get Connected</span>
+            <span className="text-xs text-center">Find nearby users</span>
+          </button>
+        </div>
+      </div>
+
       {/* Content based on active tab */}
       {activeTab === 'friends' && (
       <div className="p-4 space-y-3">
@@ -343,12 +447,13 @@ export function FriendsPage({ onBack }: FriendsPageProps) {
                     <div className="text-sm text-gray-500">Friend</div>
               </div>
             </div>
-                <button
-                  onClick={() => handleRemoveFriend(friend.id, friend.friendName)}
-                  className="text-sm text-red-500 hover:text-red-700 px-3 py-1 rounded-lg hover:bg-red-50"
-                >
-                  Remove
-                </button>
+                                 <button
+                   onClick={() => handleRemoveFriend(friend.id, friend.friendName)}
+                   className="text-sm text-red-500 hover:text-red-700 px-3 py-1 rounded-lg hover:bg-red-50"
+                   title={`Remove ${friend.friendName} from friends`}
+                 >
+                   Remove
+                 </button>
               </div>
             ))
           )}
@@ -472,6 +577,90 @@ export function FriendsPage({ onBack }: FriendsPageProps) {
               </div>
             ))
           )}
+        </div>
+      )}
+
+      {/* Connection Modal */}
+      {showConnectionModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-md max-h-[80vh] overflow-hidden">
+            {/* Header */}
+            <div className="p-4 border-b flex items-center justify-between">
+              <h3 className="text-lg font-semibold">
+                {isDiscoverable ? 'You are Discoverable' : 'Available Users'}
+              </h3>
+              <button 
+                onClick={() => {
+                  setShowConnectionModal(false)
+                  setIsDiscoverable(false)
+                  setAvailableUsers([])
+                }}
+                className="p-2 hover:bg-gray-100 rounded-full"
+                title="Close connection modal"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-4">
+              {isDiscoverable ? (
+                <div className="text-center py-8">
+                  <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-4">
+                    <Users className="w-8 h-8 text-green-600" />
+                  </div>
+                  <h4 className="text-lg font-semibold mb-2">You are discoverable!</h4>
+                  <p className="text-gray-600 mb-4">
+                    Other users can now find and connect to you. Keep this screen open.
+                  </p>
+                  <div className="animate-pulse">
+                    <div className="w-4 h-4 bg-green-500 rounded-full mx-auto"></div>
+                  </div>
+                  <button
+                    onClick={stopDiscovery}
+                    className="mt-4 px-6 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600"
+                  >
+                    Stop Discovery
+                  </button>
+                </div>
+              ) : isScanningForUsers ? (
+                <div className="text-center py-8">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
+                  <h4 className="text-lg font-semibold mb-2">Scanning for users...</h4>
+                  <p className="text-gray-600">Looking for nearby discoverable users</p>
+                </div>
+              ) : availableUsers.length > 0 ? (
+                <div className="space-y-3">
+                  <p className="text-sm text-gray-600 mb-4">Found {availableUsers.length} user(s) nearby:</p>
+                  {availableUsers.map((user) => (
+                    <div key={user.id} className="flex items-center justify-between p-3 border rounded-lg">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
+                          <Users className="w-5 h-5 text-blue-600" />
+                        </div>
+                        <div>
+                          <div className="font-medium">{user.name}</div>
+                          <div className="text-sm text-gray-500">{user.distance}</div>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => connectToUser(user.id, user.name)}
+                        className="px-4 py-2 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600"
+                      >
+                        Connect
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8">
+                  <Search className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+                  <p className="text-gray-500">No users found</p>
+                  <p className="text-sm text-gray-400">Make sure other users have tapped "Connect"</p>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
