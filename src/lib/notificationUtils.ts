@@ -14,6 +14,10 @@ export interface CreateNotificationData {
     fromUserId?: string;
     fromUserName?: string;
     requestId?: string;
+  // Optional emergency location context
+  lat?: number;
+  lng?: number;
+  address?: string | null;
   };
 }
 

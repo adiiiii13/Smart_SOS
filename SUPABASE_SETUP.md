@@ -200,6 +200,36 @@ CREATE POLICY "Notifications: sender may insert friend events" ON public.notific
     )
   );
 
+-- Notifications: allow sender to insert emergency SOS alerts for friends (client-side)
+-- Minimal variant (based on action_data.fromUserId):
+CREATE POLICY "Notifications: sender may insert emergency alerts" ON public.notifications
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    type = 'emergency' AND action_type = 'emergency_alert'
+    AND (
+      CASE WHEN action_data ? 'fromUserId'
+      THEN (action_data->>'fromUserId')::uuid = auth.uid()
+      ELSE false END
+    )
+  );
+
+-- Optional hardened variant: also ensure receiver is an active friend of the sender
+-- (Uncomment to replace the minimal variant)
+-- CREATE POLICY "Notifications: sender emergency alerts to friends only" ON public.notifications
+--   FOR INSERT TO authenticated
+--   WITH CHECK (
+--     type = 'emergency' AND action_type = 'emergency_alert'
+--     AND (
+--       CASE WHEN action_data ? 'fromUserId'
+--       THEN (action_data->>'fromUserId')::uuid = auth.uid()
+--       ELSE false END
+--     )
+--     AND EXISTS (
+--       SELECT 1 FROM public.friends f
+--       WHERE f.friend_id = auth.uid() AND f.user_id = user_id AND f.status = 'active'
+--     )
+--   );
+
 -- Inspect current notification policies
 SELECT schemaname, tablename, policyname, permissive, roles, cmd, qual, with_check
 FROM pg_policies

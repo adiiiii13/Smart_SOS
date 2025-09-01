@@ -206,3 +206,74 @@ export const updateEmergencyStatus = async (emergencyId: string, status: 'active
     .eq('id', emergencyId);
   if (error) { console.error('Error updating emergency status:', error); throw error; }
 }
+
+// Reverse geocode coordinates into a human-readable address using Nominatim
+export async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}&zoom=18&addressdetails=1`;
+    const res = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    return data?.display_name || null;
+  } catch {
+    return null;
+  }
+}
+
+// Send SOS alert notifications to all active friends of the user
+export const sendSOSAlertToFriends = async (
+  fromUserId: string,
+  fromUserName: string,
+  location: string,
+  phone?: string,
+  coords?: { lat: number; lng: number } | null,
+  addressText?: string | null
+) => {
+  try {
+    // Fetch active friendships where current user is the owner
+    const { data: friends, error } = await supabase
+      .from(TABLES.FRIENDS)
+      .select('friend_id, friend_name, friend_email, status')
+      .eq('user_id', fromUserId)
+      .eq('status', 'active');
+    if (error) throw error;
+    const targets = (friends || []).map(f => f.friend_id).filter(Boolean) as string[];
+    if (!targets.length) {
+      // Self-test fallback so a single user can see the banner locally
+      await createNotification({
+        userId: fromUserId,
+        type: 'emergency',
+        title: `SOS Alert (self-test)`,
+        message: `${fromUserName} pressed SOS. This is a self-test as no friends are linked.`,
+        priority: 'high',
+        location,
+        phone,
+        emergencyType: 'sos',
+        actionType: 'emergency_alert',
+        actionData: { fromUserId, fromUserName }
+      });
+      return 1;
+    }
+    const tasks = targets.map(fid => createNotification({
+      userId: fid,
+      type: 'emergency',
+      title: `SOS Alert from ${fromUserName}`,
+      message: `${fromUserName} pressed SOS. Please check on them immediately.${addressText ? `\nLocation: ${addressText}` : ''}`,
+      priority: 'high',
+      location: addressText || location,
+      phone,
+      emergencyType: 'sos',
+      actionType: 'emergency_alert',
+      actionData: { fromUserId, fromUserName, lat: coords?.lat, lng: coords?.lng, address: addressText || null }
+    }));
+    const results = await Promise.allSettled(tasks);
+    const success = results.filter(r => r.status === 'fulfilled').length;
+    if (success === 0 && targets.length > 0) {
+      throw new Error('RLS likely blocked notification inserts. See SUPABASE_SETUP.md for policies.');
+    }
+    return success;
+  } catch (e) {
+    console.error('sendSOSAlertToFriends failed:', e);
+    throw e;
+  }
+}

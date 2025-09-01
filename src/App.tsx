@@ -3,7 +3,7 @@ import emergencySiren from './assets/dirty-siren-40635.mp3';
 import notificationSound from './assets/Notifi.wav';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { supabase, TABLES } from './lib/supabase';
-import { submitEmergencyReport } from './lib/emergencyUtils';
+import { submitEmergencyReport, sendSOSAlertToFriends, reverseGeocode } from './lib/emergencyUtils';
 // import { connectToDatabase } from './lib/mongodb';
 
 interface SpeechRecognitionEvent {
@@ -662,6 +662,9 @@ function MainApp() {
   const [error, setError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [incomingSOS, setIncomingSOS] = useState<null | { fromUserId: string; fromUserName: string; location?: string; lat?: number; lng?: number; address?: string | null }>(null);
+  // const [lastKnownCoords, setLastKnownCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [lastKnownAddress, setLastKnownAddress] = useState<string | null>(null);
   const [hasWelcomed, setHasWelcomed] = useState(false);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   // Keep refs to avoid effect resubscriptions
@@ -679,12 +682,36 @@ function MainApp() {
     }
   };
 
-  const handleSOSClick = () => {
+  const handleSOSClick = async () => {
     ensureAudio();
     const audio = audioRef.current;
     if (!audio) return;
     if (!isPlaying) {
-      audio.play().then(() => setIsPlaying(true)).catch(err => {
+      // Broadcast SOS immediately; don't depend on audio playback
+      (async () => {
+        try {
+          if (user) {
+            const name = user.displayName || (user.email ? user.email.split('@')[0] : 'User');
+            // Try to pull a fresh location and resolve address for richer alert
+            let coords: { lat: number; lng: number } | null = null;
+            try {
+              const pos = await new Promise<GeolocationPosition>((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }));
+              coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+            } catch {}
+            const address = coords ? await reverseGeocode(coords.lat, coords.lng) : null;
+            setLastKnownAddress(address || null);
+            const loc = address || 'Live location';
+            const delivered = await sendSOSAlertToFriends(user.uid, name, loc, undefined, coords, address);
+            console.log(`SOS sent to ${delivered} friend(s).`);
+          }
+        } catch (e) {
+          console.warn('SOS friend broadcast failed (best-effort):', e);
+          alert('SOS alert could not be delivered to friends. Check Supabase RLS policies for notifications/friends tables.');
+        }
+      })();
+      audio.play().then(() => {
+        setIsPlaying(true);
+      }).catch(err => {
         console.error('Play blocked', err);
         alert('Tap again to enable sound.');
       });
@@ -762,7 +789,23 @@ function MainApp() {
     };
     loadUnread();
     const channel = supabase.channel('unread_notifications_' + user.uid)
-      .on('postgres_changes', { event: '*', schema: 'public', table: TABLES.NOTIFICATIONS, filter: `user_id=eq.${user.uid}` }, () => loadUnread())
+      .on('postgres_changes', { event: '*', schema: 'public', table: TABLES.NOTIFICATIONS, filter: `user_id=eq.${user.uid}` }, async (payload) => {
+        // If a new emergency alert arrives, display SOS banner and play siren
+        try {
+          const row: any = payload.new;
+          if (row && row.type === 'emergency' && (row.action_type === 'emergency_alert' || row.emergency_type === 'sos')) {
+            const fromUserName = row.action_data?.fromUserName || 'A friend';
+            const fromUserId = row.action_data?.fromUserId || '';
+            setIncomingSOS({ fromUserId, fromUserName, location: row.location || undefined, lat: row.action_data?.lat, lng: row.action_data?.lng, address: row.action_data?.address ?? null });
+            ensureAudio();
+            const el = audioRef.current;
+            if (el) {
+              try { await el.play(); } catch { /* ignore */ }
+            }
+          }
+        } catch {}
+        await loadUnread();
+      })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [user]);
@@ -886,6 +929,55 @@ function MainApp() {
         </div>
       )}
       {renderPage()}
+
+      {/* Incoming SOS banner */}
+      {incomingSOS && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70">
+          <div className="bg-white rounded-2xl shadow-xl w-[90%] max-w-md p-6 text-center">
+            <div className="text-red-600 font-bold text-2xl mb-2">EMERGENCY SOS</div>
+            <div className="text-gray-800 mb-1">Alert from: <span className="font-semibold">{incomingSOS.fromUserName}</span></div>
+            {incomingSOS.location && <div className="text-gray-600 mb-3">Location: {incomingSOS.location}</div>}
+            <div className="flex flex-col sm:flex-row gap-3 justify-center mt-4">
+              <button
+                onClick={() => {
+                  // Navigate to Detection Tracker and stop siren
+                  const el = audioRef.current; if (el) { el.pause(); el.currentTime = 0; }
+                  setIsPlaying(false);
+                  // Show address popup before redirect
+                  const addressText = incomingSOS?.address || lastKnownAddress || incomingSOS?.location || 'Live location';
+                  alert(`Here is the address of user:\n${addressText}`);
+                  setIncomingSOS(null);
+                  setCurrentPage('detection');
+                }}
+                className="px-4 py-2 rounded-lg bg-red-600 text-white hover:bg-red-700"
+              >
+                Live Location
+              </button>
+              <button
+                onClick={() => {
+                  // Stop local siren but keep banner until dismissed
+                  const el = audioRef.current; if (el) { el.pause(); el.currentTime = 0; }
+                  setIsPlaying(false);
+                }}
+                className="px-4 py-2 rounded-lg border text-red-600 border-red-200 hover:bg-red-50"
+              >
+                Mute Siren
+              </button>
+              <button
+                onClick={() => {
+                  // Stop siren and dismiss banner
+                  const el = audioRef.current; if (el) { el.pause(); el.currentTime = 0; }
+                  setIsPlaying(false);
+                  setIncomingSOS(null);
+                }}
+                className="px-4 py-2 rounded-lg bg-gray-100 text-gray-800 hover:bg-gray-200"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Chatbot Button */}
       <button

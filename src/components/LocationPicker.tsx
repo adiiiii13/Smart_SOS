@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
-import { Icon, LatLng } from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+import { Icon } from 'leaflet';
 import { Search, MapPin, X, Check } from 'lucide-react';
 
 // Fix for default marker icon in react-leaflet
@@ -24,7 +25,7 @@ interface SearchResult {
 
 // Component to handle map click events
 function MapClickHandler({ onLocationSelect }: { onLocationSelect: (lat: number, lng: number) => void }) {
-  const map = useMapEvents({
+  useMapEvents({
     click: (e) => {
       onLocationSelect(e.latlng.lat, e.latlng.lng);
     },
