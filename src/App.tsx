@@ -38,7 +38,7 @@ declare global {
   }
 }
 
-import { Bell, Phone, X, Send, MapPin, Camera, Mic, CheckCircle, Bot, RefreshCw, Activity, Stethoscope, HeartPulse, Home, UserCircle, MessageCircle } from 'lucide-react';
+import { Bell, Phone, X, Send, MapPin, Camera, Mic, CheckCircle, Bot, RefreshCw, Activity, Stethoscope, HeartPulse, Home, UserCircle, MessageCircle, Compass } from 'lucide-react';
 import { PredictionPage } from './pages/prediction';
 import { DetectionTrackerPage } from './pages/detection-tracker';
 import { QuickFirstAidPage } from './pages/quick-first-aid';
@@ -46,6 +46,7 @@ import { CallEmergencyPage, ManualPage, TipsPage, VideoGuidePage } from './pages
 import { ProfilePage } from './pages/profile';
 import { FriendsPage } from './pages/friends';
 import { NotificationsPage } from './pages/notifications';
+import { TourismPage } from './pages/tourism';
 import { LoginPage } from './pages/login';
 import { SignupPage } from './pages/signup';
 import { geminiAI } from './lib/geminiAI';
@@ -667,6 +668,8 @@ function MainApp() {
   const [lastKnownAddress, setLastKnownAddress] = useState<string | null>(null);
   const [hasWelcomed, setHasWelcomed] = useState(false);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [supabaseConnected, setSupabaseConnected] = useState(true);
   // Keep refs to avoid effect resubscriptions
   const previousNotificationCountRef = useRef(0);
   const lastNotificationIdsRef = useRef<string[]>([]);
@@ -769,46 +772,95 @@ function MainApp() {
       return;
     }
     const loadUnread = async () => {
-      const { data, error } = await supabase
-        .from(TABLES.NOTIFICATIONS)
-        .select('id')
-        .eq('user_id', user.uid)
-        .eq('is_read', false);
-      if (error) { console.error('Unread notifications fetch error', error); return; }
-      const ids = (data || []).map(d => d.id as string);
-      const count = ids.length;
-      const hasNew = ids.some(id => !lastNotificationIdsRef.current.includes(id));
-      const isFirst = firstNotificationSnapshotRef.current;
-      if (!isFirst && (hasNew || previousNotificationCountRef.current !== count)) {
-        playNotificationSound();
+      try {
+        const { data, error } = await supabase
+          .from(TABLES.NOTIFICATIONS)
+          .select('id')
+          .eq('user_id', user.uid)
+          .eq('is_read', false);
+        
+        if (error) { 
+          console.warn('Unread notifications fetch error (using fallback):', error); 
+          // Use fallback - don't break the app
+          setUnreadNotifications(0);
+          setSupabaseConnected(false);
+          return; 
+        }
+        
+        const ids = (data || []).map(d => d.id as string);
+        const count = ids.length;
+        const hasNew = ids.some(id => !lastNotificationIdsRef.current.includes(id));
+        const isFirst = firstNotificationSnapshotRef.current;
+        
+        if (!isFirst && (hasNew || previousNotificationCountRef.current !== count)) {
+          playNotificationSound();
+        }
+        
+        if (isFirst) firstNotificationSnapshotRef.current = false;
+        setUnreadNotifications(count);
+        lastNotificationIdsRef.current = ids;
+        previousNotificationCountRef.current = count;
+        setSupabaseConnected(true); // Connection is working
+      } catch (error) {
+        console.warn('Failed to load notifications (network issue):', error);
+        // Graceful fallback - app continues to work
+        setUnreadNotifications(0);
+        setSupabaseConnected(false);
       }
-      if (isFirst) firstNotificationSnapshotRef.current = false;
-      setUnreadNotifications(count);
-      lastNotificationIdsRef.current = ids;
-      previousNotificationCountRef.current = count;
     };
     loadUnread();
-    const channel = supabase.channel('unread_notifications_' + user.uid)
-      .on('postgres_changes', { event: '*', schema: 'public', table: TABLES.NOTIFICATIONS, filter: `user_id=eq.${user.uid}` }, async (payload) => {
-        // If a new emergency alert arrives, display SOS banner and play siren
-        try {
-          const row: any = payload.new;
-          if (row && row.type === 'emergency' && (row.action_type === 'emergency_alert' || row.emergency_type === 'sos')) {
-            const fromUserName = row.action_data?.fromUserName || 'A friend';
-            const fromUserId = row.action_data?.fromUserId || '';
-            setIncomingSOS({ fromUserId, fromUserName, location: row.location || undefined, lat: row.action_data?.lat, lng: row.action_data?.lng, address: row.action_data?.address ?? null });
-            ensureAudio();
-            const el = audioRef.current;
-            if (el) {
-              try { await el.play(); } catch { /* ignore */ }
+    
+    let channel: any = null;
+    try {
+      channel = supabase.channel('unread_notifications_' + user.uid)
+        .on('postgres_changes', { event: '*', schema: 'public', table: TABLES.NOTIFICATIONS, filter: `user_id=eq.${user.uid}` }, async (payload) => {
+          // If a new emergency alert arrives, display SOS banner and play siren
+          try {
+            const row: any = payload.new;
+            if (row && row.type === 'emergency' && (row.action_type === 'emergency_alert' || row.emergency_type === 'sos')) {
+              const fromUserName = row.action_data?.fromUserName || 'A friend';
+              const fromUserId = row.action_data?.fromUserId || '';
+              setIncomingSOS({ fromUserId, fromUserName, location: row.location || undefined, lat: row.action_data?.lat, lng: row.action_data?.lng, address: row.action_data?.address ?? null });
+              ensureAudio();
+              const el = audioRef.current;
+              if (el) {
+                try { await el.play(); } catch { /* ignore */ }
+              }
             }
+          } catch (error) {
+            console.warn('Error processing notification:', error);
           }
-        } catch {}
-        await loadUnread();
-      })
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
+          await loadUnread();
+        })
+        .subscribe();
+    } catch (error) {
+      console.warn('Failed to subscribe to notifications (offline mode):', error);
+    }
+    
+    return () => { 
+      if (channel) {
+        try {
+          supabase.removeChannel(channel);
+        } catch (error) {
+          console.warn('Error removing channel:', error);
+        }
+      }
+    };
   }, [user]);
+
+  // Monitor online/offline status
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   const handleLogin = async (email: string, password: string) => {
     try {
@@ -883,6 +935,7 @@ function MainApp() {
       case 'video': return <VideoGuidePage onBack={() => setCurrentPage('firstaid')} />;
       case 'manual': return <ManualPage onBack={() => setCurrentPage('firstaid')} />;
       case 'tips': return <TipsPage onBack={() => setCurrentPage('firstaid')} />;
+      case 'tourism': return <TourismPage onBack={() => setCurrentPage('home')} />;
       case 'profile': 
         return <ProfilePage onLogout={handleLogout} onOpenFriends={() => setCurrentPage('friends')} />;
       case 'friends': 
@@ -914,7 +967,22 @@ function MainApp() {
       {currentPage !== 'profile' && (
         <div className="px-4 pt-3 flex items-center justify-between">
           <div className="text-sm text-gray-700">Hey, {user ? (user.displayName || (user.email ? user.email.split('@')[0] : 'User')) : 'Guest'}!</div>
-          <div>
+          <div className="flex items-center gap-2">
+            {/* Connection Status Indicator */}
+            <div className="flex items-center gap-1">
+              <div className={`w-2 h-2 rounded-full ${
+                isOnline && supabaseConnected ? 'bg-green-500' : 
+                isOnline ? 'bg-orange-500' : 'bg-red-500'
+              }`}></div>
+              <span className={`text-xs ${
+                isOnline && supabaseConnected ? 'text-green-600' : 
+                isOnline ? 'text-orange-600' : 'text-red-600'
+              }`}>
+                {isOnline && supabaseConnected ? 'Online' : 
+                 isOnline ? 'Limited' : 'Offline'}
+              </span>
+            </div>
+            
             {isAuthenticated ? (
               <button onClick={() => setCurrentPage('notifications')} className="relative p-2 rounded-full hover:bg-gray-100" aria-label="Notifications">
                 <Bell className="w-5 h-5 text-gray-700" />
@@ -989,49 +1057,166 @@ function MainApp() {
 
       <ChatBot isOpen={isChatOpen} onClose={() => setIsChatOpen(false)} />
 
-      {/* Bottom Navigation */}
-      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 p-3">
-        <div className="flex justify-around items-center">
-          <button 
-            className={`flex flex-col items-center ${currentPage === 'prediction' ? 'text-red-500' : 'text-gray-400'} transition-colors duration-200`}
-            onClick={() => setCurrentPage('prediction')}
-            title="Go to Prediction page"
-          >
-            <HeartPulse className="w-5 h-5 cursor-pointer" />
-            <span className="text-[10px] mt-1">Prediction</span>
-          </button>
-          <button 
-            className={`flex flex-col items-center ${currentPage === 'firstaid' ? 'text-red-500' : 'text-gray-400'} transition-colors duration-200`}
-            onClick={() => setCurrentPage('firstaid')}
-            title="Go to Quick First Aid page"
-          >
-            <Stethoscope className="w-5 h-5 cursor-pointer" />
-            <span className="text-[10px] mt-1">Quick First Aid</span>
-          </button>
-          <button 
-            className={`flex flex-col items-center ${currentPage === 'home' ? 'text-red-500' : 'text-gray-400'} transition-colors duration-200`}
-            onClick={() => setCurrentPage('home')}
-            title="Go to Home page"
-          >
-            <Home className="w-5 h-5 cursor-pointer" />
-            <span className="text-[10px] mt-1">Home</span>
-          </button>
-          <button 
-            className={`flex flex-col items-center ${currentPage === 'detection' ? 'text-red-500' : 'text-gray-400'} transition-colors duration-200`}
-            onClick={() => setCurrentPage('detection')}
-            title="Go to Detection Tracker page"
-          >
-            <Activity className="w-5 h-5 cursor-pointer" />
-            <span className="text-[10px] mt-1">Detection Tracker</span>
-          </button>
-          <button 
-            className={`flex flex-col items-center ${currentPage === 'profile' ? 'text-red-500' : 'text-gray-400'} transition-colors duration-200`}
-            onClick={() => setCurrentPage(isAuthenticated ? 'profile' : 'login')}
-            title="Go to Profile page"
-          >
-            <UserCircle className="w-5 h-5 cursor-pointer" />
-            <span className="text-[10px] mt-1">Profile</span>
-          </button>
+      {/* Enhanced Bottom Navigation */}
+      <div className="fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-lg border-t border-gray-200 shadow-2xl">
+        <div className="relative">
+          {/* Gradient overlay for visual depth */}
+          <div className="absolute inset-0 bg-gradient-to-r from-red-50 via-white to-blue-50 opacity-30"></div>
+          
+          <div className="relative flex justify-around items-center py-2 px-1">
+            {/* Prediction Button */}
+            <button 
+              className={`group relative flex flex-col items-center p-2 rounded-xl transition-all duration-300 transform hover:scale-110 ${
+                currentPage === 'prediction' 
+                ? 'text-red-600 bg-red-50 shadow-md' 
+                : 'text-gray-500 hover:text-red-500 hover:bg-red-50/50'
+              }`}
+              onClick={() => setCurrentPage('prediction')}
+              title="Health Prediction & Analysis"
+            >
+              <div className={`p-1 rounded-lg transition-all duration-300 ${
+                currentPage === 'prediction' ? 'bg-red-100' : 'group-hover:bg-red-100/60'
+              }`}>
+                <HeartPulse className="w-5 h-5" />
+              </div>
+              <span className={`text-[9px] mt-1 font-medium transition-all duration-300 ${
+                currentPage === 'prediction' ? 'text-red-700' : 'text-gray-600 group-hover:text-red-600'
+              }`}>
+                Prediction
+              </span>
+              {currentPage === 'prediction' && (
+                <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-8 h-0.5 bg-gradient-to-r from-red-400 to-red-600 rounded-full"></div>
+              )}
+            </button>
+
+            {/* First Aid Button */}
+            <button 
+              className={`group relative flex flex-col items-center p-2 rounded-xl transition-all duration-300 transform hover:scale-110 ${
+                currentPage === 'firstaid' 
+                ? 'text-green-600 bg-green-50 shadow-md' 
+                : 'text-gray-500 hover:text-green-500 hover:bg-green-50/50'
+              }`}
+              onClick={() => setCurrentPage('firstaid')}
+              title="Emergency First Aid Guide"
+            >
+              <div className={`p-1 rounded-lg transition-all duration-300 ${
+                currentPage === 'firstaid' ? 'bg-green-100' : 'group-hover:bg-green-100/60'
+              }`}>
+                <Stethoscope className="w-5 h-5" />
+              </div>
+              <span className={`text-[9px] mt-1 font-medium transition-all duration-300 ${
+                currentPage === 'firstaid' ? 'text-green-700' : 'text-gray-600 group-hover:text-green-600'
+              }`}>
+                First Aid
+              </span>
+              {currentPage === 'firstaid' && (
+                <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-8 h-0.5 bg-gradient-to-r from-green-400 to-green-600 rounded-full"></div>
+              )}
+            </button>
+
+            {/* Home Button - Special Centered Design */}
+            <button 
+              className={`group relative flex flex-col items-center p-3 rounded-2xl transition-all duration-300 transform hover:scale-110 ${
+                currentPage === 'home' 
+                ? 'text-white bg-gradient-to-br from-red-500 to-red-600 shadow-lg shadow-red-200' 
+                : 'text-gray-500 hover:text-red-500 hover:bg-gradient-to-br hover:from-red-50 hover:to-red-100 hover:shadow-md'
+              }`}
+              onClick={() => setCurrentPage('home')}
+              title="Emergency Home Dashboard"
+            >
+              <div className={`transition-all duration-300 ${
+                currentPage === 'home' ? 'drop-shadow-sm' : 'group-hover:drop-shadow-sm'
+              }`}>
+                <Home className="w-6 h-6" />
+              </div>
+              <span className={`text-[9px] mt-1 font-bold transition-all duration-300 ${
+                currentPage === 'home' ? 'text-white' : 'text-gray-600 group-hover:text-red-600'
+              }`}>
+                Home
+              </span>
+              {currentPage === 'home' && (
+                <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-10 h-0.5 bg-white rounded-full shadow-sm"></div>
+              )}
+            </button>
+
+            {/* Tourism Button */}
+            <button 
+              className={`group relative flex flex-col items-center p-2 rounded-xl transition-all duration-300 transform hover:scale-110 ${
+                currentPage === 'tourism' 
+                ? 'text-blue-600 bg-blue-50 shadow-md' 
+                : 'text-gray-500 hover:text-blue-500 hover:bg-blue-50/50'
+              }`}
+              onClick={() => setCurrentPage('tourism')}
+              title="Smart Tourism & Travel Guide"
+            >
+              <div className={`p-1 rounded-lg transition-all duration-300 ${
+                currentPage === 'tourism' ? 'bg-blue-100' : 'group-hover:bg-blue-100/60'
+              }`}>
+                <Compass className="w-5 h-5" />
+              </div>
+              <span className={`text-[9px] mt-1 font-medium transition-all duration-300 ${
+                currentPage === 'tourism' ? 'text-blue-700' : 'text-gray-600 group-hover:text-blue-600'
+              }`}>
+                Tourism
+              </span>
+              {currentPage === 'tourism' && (
+                <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-8 h-0.5 bg-gradient-to-r from-blue-400 to-blue-600 rounded-full"></div>
+              )}
+            </button>
+
+            {/* Detection Button */}
+            <button 
+              className={`group relative flex flex-col items-center p-2 rounded-xl transition-all duration-300 transform hover:scale-110 ${
+                currentPage === 'detection' 
+                ? 'text-purple-600 bg-purple-50 shadow-md' 
+                : 'text-gray-500 hover:text-purple-500 hover:bg-purple-50/50'
+              }`}
+              onClick={() => setCurrentPage('detection')}
+              title="Real-time Detection & Monitoring"
+            >
+              <div className={`p-1 rounded-lg transition-all duration-300 ${
+                currentPage === 'detection' ? 'bg-purple-100' : 'group-hover:bg-purple-100/60'
+              }`}>
+                <Activity className="w-5 h-5" />
+              </div>
+              <span className={`text-[9px] mt-1 font-medium transition-all duration-300 ${
+                currentPage === 'detection' ? 'text-purple-700' : 'text-gray-600 group-hover:text-purple-600'
+              }`}>
+                Detection
+              </span>
+              {currentPage === 'detection' && (
+                <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-8 h-0.5 bg-gradient-to-r from-purple-400 to-purple-600 rounded-full"></div>
+              )}
+            </button>
+
+            {/* Profile Button */}
+            <button 
+              className={`group relative flex flex-col items-center p-2 rounded-xl transition-all duration-300 transform hover:scale-110 ${
+                currentPage === 'profile' 
+                ? 'text-orange-600 bg-orange-50 shadow-md' 
+                : 'text-gray-500 hover:text-orange-500 hover:bg-orange-50/50'
+              }`}
+              onClick={() => setCurrentPage(isAuthenticated ? 'profile' : 'login')}
+              title={isAuthenticated ? "User Profile & Settings" : "Login to Account"}
+            >
+              <div className={`p-1 rounded-lg transition-all duration-300 relative ${
+                currentPage === 'profile' ? 'bg-orange-100' : 'group-hover:bg-orange-100/60'
+              }`}>
+                <UserCircle className="w-5 h-5" />
+                {!isAuthenticated && (
+                  <div className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full border border-white"></div>
+                )}
+              </div>
+              <span className={`text-[9px] mt-1 font-medium transition-all duration-300 ${
+                currentPage === 'profile' ? 'text-orange-700' : 'text-gray-600 group-hover:text-orange-600'
+              }`}>
+                Profile
+              </span>
+              {currentPage === 'profile' && (
+                <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-8 h-0.5 bg-gradient-to-r from-orange-400 to-orange-600 rounded-full"></div>
+              )}
+            </button>
+          </div>
         </div>
       </div>
     </div>
